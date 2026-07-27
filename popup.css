@@ -1,0 +1,489 @@
+/* popup.css — Styles for Smart Media Tab Manager popup */
+
+:root {
+  --bg:           #12121f;
+  --surface:      #1a1a2e;
+  --border:       rgba(255, 255, 255, 0.08);
+
+  --music:        #1db954;
+  --lecture:      #4285f4;
+  --movie:        #e50914;
+  --smart:        #9c27b0;
+  --danger:       #f87171;
+  --warning:      #fbbf24;
+
+  /* RGB-channel companions so every opacity variant (rgba(...)) derives from
+     the same source color instead of being hand-copied as raw decimals.
+     Keep these in sync with the hex values above if you ever rebrand.
+     Kept identical in spirit to options.css's variables for a consistent
+     design system across the popup and options pages. */
+  --music-rgb:    29, 185, 84;
+  --lecture-rgb:  66, 133, 244;
+  --movie-rgb:    229, 9, 20;
+  --smart-rgb:    156, 39, 176;
+  --danger-rgb:   248, 113, 113;
+  --warning-rgb:  251, 191, 36;
+
+  --text:         #e8eaf6;
+  --text-muted:   #99a3d9; /* lightened from #7986cb for safer small-text contrast, matching options.css */
+  --radius:       8px;
+  --font:         -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  width: 300px;
+}
+
+.container {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ── Header ────────────────────────────────────────────────────────────── */
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.logo {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Smart Mode pill */
+.smart-pill {
+  background: rgba(var(--smart-rgb), 0.2);
+  color: #ce93d8;
+  border: 1px solid rgba(var(--smart-rgb), 0.4);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* ── Smart banner ───────────────────────────────────────────────────────── */
+
+.smart-banner {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: rgba(var(--smart-rgb), 0.08);
+  border: 1px solid rgba(var(--smart-rgb), 0.2);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.smart-banner-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ce93d8;
+  box-shadow: 0 0 6px rgba(var(--smart-rgb), 0.6);
+  flex-shrink: 0;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.5; }
+}
+
+.smart-banner span {
+  font-size: 11px;
+  color: #ce93d8;
+}
+
+/* ── Current tab indicator (Smart Mode) ─────────────────────────────────── */
+
+.current-tab-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+}
+
+.current-tab-label {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.current-tab-role {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.current-tab-role.music   { color: var(--music); }
+.current-tab-role.lecture { color: var(--lecture); }
+.current-tab-role.movie   { color: var(--movie); }
+.current-tab-role.neutral { color: #555577; }
+
+/* ── Tab section ────────────────────────────────────────────────────────── */
+
+.tab-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.tab-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 11px;
+  transition: background 0.1s;
+}
+
+.tab-row.active-row {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.tab-label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  flex: 1;
+}
+
+.tab-badge {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.music-badge {
+  background: rgba(var(--music-rgb), 0.15);
+  color: var(--music);
+  border: 1px solid rgba(var(--music-rgb), 0.3);
+}
+
+.lecture-badge {
+  background: rgba(var(--lecture-rgb), 0.15);
+  color: var(--lecture);
+  border: 1px solid rgba(var(--lecture-rgb), 0.3);
+}
+
+.movie-badge {
+  background: rgba(var(--movie-rgb), 0.15);
+  color: var(--movie);
+  border: 1px solid rgba(var(--movie-rgb), 0.3);
+}
+
+.tab-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tab-role-line {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.tab-role {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.auto-tag {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: #9c6cc8;
+  background: rgba(var(--smart-rgb), 0.1);
+  border: 1px solid rgba(var(--smart-rgb), 0.2);
+  padding: 1px 4px;
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+
+.audible-tag {
+  font-size: 10px;
+}
+
+.tab-title {
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.divider {
+  height: 1px;
+  background: var(--border);
+}
+
+/* ── Set buttons ────────────────────────────────────────────────────────── */
+
+.set-btn {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 5px 9px;
+  border-radius: 5px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  color: var(--text);
+  flex-shrink: 0;
+  transition: background 0.12s, border-color 0.12s;
+  white-space: nowrap;
+}
+
+.set-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+/* ── Status row ─────────────────────────────────────────────────────────── */
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 1px;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #333355;
+  flex-shrink: 0;
+}
+
+.status-dot.music   { background: var(--music);   box-shadow: 0 0 5px rgba(var(--music-rgb), 0.5); }
+.status-dot.lecture { background: var(--lecture); box-shadow: 0 0 5px rgba(var(--lecture-rgb), 0.5); }
+.status-dot.movie   { background: var(--movie);   box-shadow: 0 0 5px rgba(var(--movie-rgb), 0.5); }
+.status-dot.smart   { background: var(--smart);   box-shadow: 0 0 5px rgba(var(--smart-rgb), 0.5); }
+
+/* ── Conflict banner (two same-category tabs both audible) ──────────────── */
+
+.conflict-banner {
+  background: rgba(var(--movie-rgb), 0.08);
+  border: 1px solid rgba(var(--movie-rgb), 0.28);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.conflict-banner p { font-size: 11px; color: #ff9d8a; line-height: 1.45; }
+
+.conflict-actions { display: flex; gap: 7px; }
+
+.conflict-btn {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.conflict-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.status-text {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ── Actions ────────────────────────────────────────────────────────────── */
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.clear-btn {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  background: rgba(var(--danger-rgb), 0.08);
+  border: 1px solid rgba(var(--danger-rgb), 0.2);
+  color: var(--danger);
+  transition: background 0.12s;
+}
+
+.clear-btn:hover {
+  background: rgba(var(--danger-rgb), 0.14);
+}
+
+.options-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s, color 0.12s;
+  flex-shrink: 0;
+}
+
+.options-btn:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: var(--text);
+}
+
+/* Consistent, on-brand focus ring for all interactive controls in the popup.
+   None of these suppress the native outline, so keyboard focus was never
+   actually broken — this just replaces the browser's default ring (which
+   reads poorly against this dark background) with one that matches the
+   accent color used for focus states on the options page. */
+.set-btn:focus-visible,
+.clear-btn:focus-visible,
+.options-btn:focus-visible,
+.yt-choice-btn:focus-visible {
+  outline: 2px solid var(--lecture);
+  outline-offset: 2px;
+}
+
+/* ── Shortcut hint ──────────────────────────────────────────────────────── */
+
+.shortcut-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+kbd {
+  display: inline-block;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 9px;
+  font-family: inherit;
+}
+
+/* ── Same-domain hint banner ─────────────────────────────────────────────── */
+
+.hint {
+  background: rgba(var(--lecture-rgb), 0.07);
+  border: 1px solid rgba(var(--lecture-rgb), 0.22);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+}
+
+.hint p { font-size: 11px; color: #82b0f8; line-height: 1.45; }
+
+/* ── YouTube per-tab ambiguity control ──────────────────────────────────── */
+/* Reuses --danger rather than its own unrelated red literals — this banner
+   is "needs your input", not strictly destructive, but it's visually close
+   enough to --danger that giving it a second undeclared red just to draw
+   that distinction wasn't worth the extra color to track. Swap to --warning
+   here instead if you'd rather visually separate it from the Clear button. */
+
+.yt-hint {
+  background: rgba(var(--danger-rgb), 0.06);
+  border-color: rgba(var(--danger-rgb), 0.22);
+}
+
+.yt-hint p { color: #ff8a80; margin-bottom: 6px; }
+
+.yt-ambiguity-actions { display: flex; gap: 7px; }
+
+.yt-choice-btn {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.yt-choice-btn.music:hover   { background: rgba(var(--music-rgb), 0.15);   border-color: rgba(var(--music-rgb), 0.4); }
+.yt-choice-btn.lecture:hover { background: rgba(var(--lecture-rgb), 0.15); border-color: rgba(var(--lecture-rgb), 0.4); }
+.yt-choice-btn.movie:hover   { background: rgba(var(--movie-rgb), 0.15);   border-color: rgba(var(--movie-rgb), 0.4); }
+
+/* ── Warning banner ─────────────────────────────────────────────────────── */
+
+.warning {
+  background: rgba(var(--warning-rgb), 0.08);
+  border: 1px solid rgba(var(--warning-rgb), 0.25);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+}
+
+.warning p { font-size: 11px; color: var(--warning); line-height: 1.45; }
+
+.hidden { display: none !important; }
+
+/* ── Reduced motion ─────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.001ms !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
