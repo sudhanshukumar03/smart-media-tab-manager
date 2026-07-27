@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Smart Media Tab Manager",
+  "version": "1.4.0",
+  "description": "Automatically manage music, lecture, and movie/show tabs — never let two music sources (or two lectures, or two shows) play at once, and resume the right one when you switch back.",
+  "minimum_chrome_version": "116",
+  "permissions": ["tabs", "storage", "scripting", "activeTab", "notifications", "windows"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png",
+    "512": "icons/icon512.png"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "commands": {
+    "toggle-mode": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+M",
+        "mac": "Command+Shift+M"
+      },
+      "description": "Toggle between music and lecture mode"
+    }
+  }
+}
