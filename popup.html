@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- Matches options.html: keeps native control theming (focus rings,
+       scrollbars, etc.) consistent with this page's dark background. -->
+  <meta name="color-scheme" content="dark" />
+  <title>Smart Media Tab Manager</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <div class="header-left">
+        <img src="icons/icon48.png" alt="" class="logo" />
+        <h1 class="title">Smart Media Tab Manager</h1>
+      </div>
+      <span class="smart-pill hidden" id="smart-pill">SMART</span>
+    </header>
+
+    <!-- Smart mode status banner -->
+    <div class="smart-banner hidden" id="smart-banner">
+      <div class="smart-banner-dot"></div>
+      <span id="smart-banner-text">Auto-detecting tabs by URL</span>
+    </div>
+
+    <!-- Current tab classification indicator (Smart Mode only).
+         aria-live so screen reader users hear the classification update as
+         popup.js rewrites #current-tab-role while the user switches tabs,
+         rather than it silently changing with no announcement. -->
+    <div class="current-tab-row hidden" id="current-tab-row" aria-live="polite">
+      <span class="current-tab-label">Current tab:</span>
+      <span class="current-tab-role" id="current-tab-role">—</span>
+    </div>
+
+    <div class="tab-section">
+      <div class="tab-row" id="music-row">
+        <div class="tab-label">
+          <span class="tab-badge music-badge">M</span>
+          <div class="tab-info">
+            <div class="tab-role-line">
+              <span class="tab-role">Music</span>
+              <span class="auto-tag hidden" id="music-auto-tag">auto</span>
+              <span class="audible-tag hidden" id="music-audible-tag">🔊</span>
+            </div>
+            <span class="tab-title" id="music-title">Not set</span>
+          </div>
+        </div>
+        <button type="button" class="set-btn" id="set-music-btn">Set current</button>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="tab-row" id="lecture-row">
+        <div class="tab-label">
+          <span class="tab-badge lecture-badge">L</span>
+          <div class="tab-info">
+            <div class="tab-role-line">
+              <span class="tab-role">Lecture</span>
+              <span class="auto-tag hidden" id="lecture-auto-tag">auto</span>
+              <span class="audible-tag hidden" id="lecture-audible-tag">🔊</span>
+            </div>
+            <span class="tab-title" id="lecture-title">Not set</span>
+          </div>
+        </div>
+        <button type="button" class="set-btn" id="set-lecture-btn">Set current</button>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="tab-row" id="movie-row">
+        <div class="tab-label">
+          <span class="tab-badge movie-badge">🎬</span>
+          <div class="tab-info">
+            <div class="tab-role-line">
+              <span class="tab-role">Movie/TV</span>
+              <span class="auto-tag hidden" id="movie-auto-tag">auto</span>
+              <span class="audible-tag hidden" id="movie-audible-tag">🔊</span>
+            </div>
+            <span class="tab-title" id="movie-title">Not set</span>
+          </div>
+        </div>
+        <button type="button" class="set-btn" id="set-movie-btn">Set current</button>
+      </div>
+    </div>
+
+    <div class="status-row">
+      <div class="status-dot" id="status-dot"></div>
+      <span class="status-text" id="status-text">Neither active</span>
+    </div>
+
+    <!-- Shown when the background detected two tabs in the same category
+         (e.g. Spotify + YouTube Music) both trying to play at once and is
+         waiting for the user to pick which one continues. Mirrors the
+         notification buttons so the choice can also be made from here. -->
+    <div class="conflict-banner hidden" id="conflict-banner" role="alert">
+      <p id="conflict-text"></p>
+      <div class="conflict-actions">
+        <button type="button" class="conflict-btn" id="conflict-choice-a"></button>
+        <button type="button" class="conflict-btn" id="conflict-choice-b"></button>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button type="button" class="clear-btn" id="clear-btn">Clear both</button>
+      <button type="button" class="options-btn" id="options-btn" title="Open settings" aria-label="Open settings">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </button>
+    </div>
+
+    <p class="shortcut-hint">
+      Shortcut: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd>
+      <span class="mac-note">(<kbd>⌘</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> on Mac)</span>
+      to toggle mode
+    </p>
+
+    <!-- Shown specifically when the active tab is youtube.com/watch and isn't
+         already marked — lets the user resolve the music/lecture ambiguity for
+         THIS tab, independent of the global YouTube setting. -->
+    <div class="hint yt-hint hidden" id="yt-ambiguity" role="status">
+      <p id="yt-ambiguity-text">This YouTube tab is:</p>
+      <div class="yt-ambiguity-actions">
+        <button type="button" class="yt-choice-btn music" id="yt-choice-music">🎵 Music</button>
+        <button type="button" class="yt-choice-btn lecture" id="yt-choice-lecture">📚 Lecture</button>
+        <button type="button" class="yt-choice-btn movie" id="yt-choice-movie">🎬 Movie</button>
+      </div>
+    </div>
+
+    <!-- Shown when both tabs share the same domain (e.g. two YouTube tabs) -->
+    <div class="hint hidden" id="same-domain-hint" role="status">
+      <p id="same-domain-hint-text"></p>
+    </div>
+
+    <div class="warning hidden" id="warning" role="alert">
+      <p id="warning-text"></p>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
