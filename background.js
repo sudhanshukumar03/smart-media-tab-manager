@@ -1,0 +1,1239 @@
+// background.js — service worker for Smart Media Tab Manager
+//
+// Modes:
+//   Manual — user marks a Music tab + Lecture tab via popup. Switching controls playback.
+//   Smart  — auto-classifies tabs by URL into categories (music / lecture / movie / work / neutral)
+//            and runs everything through the MediaManager below so only one tab per
+//            category ever plays audio at a time — even across different websites
+//            (Spotify vs YouTube Music vs Amazon Music are all "music", for example).
+//
+// Layer 1: content.js tries a real pause()/play() on the media element.
+// Layer 2: if Layer 1 can't confirm it worked, fall back to chrome.tabs.update mute.
+//          We track which tabs WE muted so we never unmute something the user muted.
+//
+// Cooldown: after any explicit action (popup/shortcut), auto-triggers on that
+//           tab are suppressed for ~2s so an explicit action can't be immediately
+//           overridden by a tab-switch event firing milliseconds later.
+//
+// Conflict resolution: when a second tab in the SAME category (e.g. two music tabs)
+// is actually audible at once, we never let both play. We ask the user which one to
+// keep via a system notification with two buttons, default safely to "pause the new
+// one, keep what's already playing" if they don't respond, and remember their choice
+// per-hostname so the same pairing won't ask again.
+//
+// State writes: chrome.storage.local get/set is not atomic across concurrent callers.
+// onActivated and onFocusChanged can both fire for a single physical tab switch, so all
+// setState() calls are serialized through a tiny in-memory queue (see _stateQueue) to
+// avoid a lost-update race where two concurrent read-modify-write calls clobber each other.
+
+// default hostname lists — seeded into storage on first run
+// edit from the Options page, not here
+
+const DEFAULT_MUSIC_HOSTNAMES = [
+  // Global streaming
+  'open.spotify.com',
+  'music.youtube.com',
+  'soundcloud.com',
+  'music.amazon.com',
+  'tidal.com',
+  'pandora.com',
+  'deezer.com',
+  'music.apple.com',
+  'tunein.com',
+  'bandcamp.com',
+  'audiomack.com',
+  'mixcloud.com',
+  'last.fm',
+  'radioparadise.com',
+  // Indian music platforms
+  'gaana.com',
+  'jiosaavn.com',
+  'saavn.com',          // old domain, still resolves
+  'wynk.in',            // Wynk Music (Airtel)
+  'hungama.com',        // Hungama Music
+  'raaga.com',
+  'iraag.net',
+];
+
+const DEFAULT_LECTURE_HOSTNAMES = [
+  'udemy.com',
+  'coursera.org',
+  'edx.org',
+  'khanacademy.org',
+  'pluralsight.com',
+  'frontendmasters.com',
+  'scrimba.com',
+  'egghead.io',
+  'leveluptutorials.com',
+  'laracasts.com',
+  'codecademy.com',
+  'skillshare.com',
+  'masterclass.com',
+  'brilliant.org',
+  'datacamp.com',
+  'teamtreehouse.com',
+  'oreilly.com',
+  'manning.com',
+  'acloudguru.com',
+  'cloudacademy.com',
+];
+
+// Movies / TV / streaming — tracked independently from Music and Lecture.
+// Self-hosted servers (Jellyfin, Emby, Plex-on-LAN, VLC Web UI) don't have a fixed
+// public hostname, so they aren't seeded here — users can add their own via Options,
+// same as any other custom hostname.
+const DEFAULT_MOVIE_HOSTNAMES = [
+  'netflix.com',
+  'primevideo.com',
+  'disneyplus.com',
+  'hotstar.com',
+  'sonyliv.com',
+  'zee5.com',
+  'mxplayer.in',
+  'tv.apple.com',
+  'hulu.com',
+  'max.com',
+  'hbomax.com',
+  'crunchyroll.com',
+  'app.plex.tv',
+  'watch.plex.tv',
+  'peacocktv.com',
+  'paramountplus.com',
+  'voot.com',
+  'jiocinema.com',
+  'multimovies.study',
+];
+
+// Friendly display names for notifications / conflict prompts. Falls back to the
+// raw hostname when a site isn't listed here — never hardcode logic on this map,
+// it's cosmetic only.
+const SITE_LABELS = {
+  // Music — global
+  'open.spotify.com': 'Spotify',
+  'music.youtube.com': 'YouTube Music',
+  'youtube.com': 'YouTube',
+  'm.youtube.com': 'YouTube',
+  'youtu.be': 'YouTube',
+  'soundcloud.com': 'SoundCloud',
+  'music.amazon.com': 'Amazon Music',
+  'tidal.com': 'Tidal',
+  'pandora.com': 'Pandora',
+  'deezer.com': 'Deezer',
+  'music.apple.com': 'Apple Music',
+  'tunein.com': 'TuneIn',
+  'bandcamp.com': 'Bandcamp',
+  'audiomack.com': 'Audiomack',
+  'mixcloud.com': 'Mixcloud',
+  'last.fm': 'Last.fm',
+  'radioparadise.com': 'Radio Paradise',
+  // Music — Indian
+  'gaana.com': 'Gaana',
+  'jiosaavn.com': 'JioSaavn',
+  'saavn.com': 'JioSaavn',
+  'wynk.in': 'Wynk Music',
+  'hungama.com': 'Hungama',
+  'raaga.com': 'Raaga',
+  'iraag.net': 'iRaag',
+  // Lecture
+  'udemy.com': 'Udemy',
+  'coursera.org': 'Coursera',
+  'edx.org': 'edX',
+  'khanacademy.org': 'Khan Academy',
+  'pluralsight.com': 'Pluralsight',
+  'frontendmasters.com': 'Frontend Masters',
+  'scrimba.com': 'Scrimba',
+  'egghead.io': 'egghead.io',
+  'leveluptutorials.com': 'Level Up Tutorials',
+  'laracasts.com': 'Laracasts',
+  'codecademy.com': 'Codecademy',
+  'skillshare.com': 'Skillshare',
+  'masterclass.com': 'MasterClass',
+  'brilliant.org': 'Brilliant',
+  'datacamp.com': 'DataCamp',
+  'teamtreehouse.com': 'Treehouse',
+  'oreilly.com': "O'Reilly",
+  'manning.com': 'Manning',
+  'acloudguru.com': 'A Cloud Guru',
+  'cloudacademy.com': 'Cloud Academy',
+  'linkedin.com': 'LinkedIn Learning',
+  // Movies / TV
+  'netflix.com': 'Netflix',
+  'primevideo.com': 'Prime Video',
+  'disneyplus.com': 'Disney+',
+  'hotstar.com': 'JioHotstar',
+  'sonyliv.com': 'Sony LIV',
+  'zee5.com': 'ZEE5',
+  'mxplayer.in': 'MX Player',
+  'tv.apple.com': 'Apple TV+',
+  'hulu.com': 'Hulu',
+  'max.com': 'HBO Max',
+  'hbomax.com': 'HBO Max',
+  'crunchyroll.com': 'Crunchyroll',
+  'app.plex.tv': 'Plex',
+  'watch.plex.tv': 'Plex',
+  'peacocktv.com': 'Peacock',
+  'paramountplus.com': 'Paramount+',
+  'voot.com': 'Voot',
+  'jiocinema.com': 'JioCinema',
+  'multimovies.study': 'MultiMovies',
+};
+
+function labelFor(hostname) {
+  if (!hostname) return 'this tab';
+  return SITE_LABELS[hostname] || hostname;
+}
+
+// Extensible category registry. Adding a new category later means
+// adding one entry here plus a hostname list — nothing else is hardcoded on
+// "music"/"lecture"/"movie" strings beyond this table and its derived maps.
+const CATEGORIES = ['music', 'lecture', 'movie'];
+const CATEGORY_TAB_FIELD   = { music: 'musicTabId',   lecture: 'lectureTabId',   movie: 'movieTabId'   };
+const CATEGORY_URL_FIELD   = { music: 'musicUrl',     lecture: 'lectureUrl',     movie: 'movieUrl'     };
+const CATEGORY_LABEL       = { music: 'Music',        lecture: 'Lecture',       movie: 'Movie/Show'   };
+const CATEGORY_EMOJI       = { music: '🎵',           lecture: '🎓',           movie: '🎬'           };
+const CATEGORY_DEFAULT_HOSTNAMES = { music: DEFAULT_MUSIC_HOSTNAMES, lecture: DEFAULT_LECTURE_HOSTNAMES, movie: DEFAULT_MOVIE_HOSTNAMES };
+const CATEGORY_HOSTNAME_FIELD = { music: 'musicHostnames', lecture: 'lectureHostnames', movie: 'movieHostnames' };
+
+// after an explicit action, suppress auto-triggers on that tab for this long
+const COOLDOWN_MS = 2000;
+const _explicitCooldown = new Map(); // tabId → { time, source, action }
+
+// guards against onActivated + onFocusChanged both firing handleTabSwitch for
+// the same physical tab switch (which would double-run play/pause + notify)
+const DUPLICATE_SWITCH_MS = 300;
+let _lastHandledSwitch = { tabId: null, time: 0 };
+
+// Same-category conflict prompts auto-resolve to "keep what's already playing"
+// if the user doesn't respond within this window (in-memory timers only — a
+// service-worker restart mid-conflict just means the prompt waits for a click
+// instead, which is a safe degradation).
+const CONFLICT_TIMEOUT_MS = 15000;
+const _conflictTimeoutTimers = new Map(); // category → timeoutId
+
+// These fire on every explicit action and every auto-trigger check — i.e. on
+// nearly every tab switch. Gate the verbose per-event tracing behind a flag so
+// template-string building (and the console call itself) is skipped by default;
+// flip to true only when actively debugging cooldown/conflict behavior.
+const DEBUG_LOGGING = false;
+
+function setExplicitCooldown(tabId, source, action) {
+  if (!tabId) return;
+  _explicitCooldown.set(tabId, { time: Date.now(), source, action });
+  if (DEBUG_LOGGING) console.log(`[SMTM] Explicit action — tabId:${tabId} source:${source} action:${action}`);
+}
+
+function checkCooldown(tabId, autoSource) {
+  const entry = _explicitCooldown.get(tabId);
+  if (!entry) {
+    if (DEBUG_LOGGING) console.log(`[SMTM] Auto trigger — tabId:${tabId} source:${autoSource} (no cooldown)`);
+    return false;
+  }
+  const inCooldown = Date.now() - entry.time < COOLDOWN_MS;
+  if (DEBUG_LOGGING) {
+    if (inCooldown) {
+      console.log(`[SMTM] Auto trigger SUPPRESSED — tabId:${tabId} source:${autoSource} (explicit ${entry.source}/${entry.action} ${Date.now() - entry.time}ms ago)`);
+    } else {
+      console.log(`[SMTM] Auto trigger — tabId:${tabId} source:${autoSource} (cooldown expired)`);
+    }
+  }
+  return inCooldown;
+}
+
+function hostnameOf(url) {
+  if (!url) return null;
+  try { return new URL(url).hostname.replace(/^www\./, ''); }
+  catch { return null; }
+}
+
+// Shared "is this tab actually making audible sound" check.
+// tab.audible alone is not sufficient — a tab that WE layer-2-muted can still
+// report audible:true while producing no actual sound. Always use this helper
+// instead of checking tab.audible directly in conflict-detection paths.
+function isTabActuallyPlaying(tab, extMutedTabIds) {
+  return tab.audible === true && !(extMutedTabIds || []).includes(tab.id);
+}
+
+// returns 'music' | 'lecture' | 'movie' | 'neutral'
+// unresolved youtube.com/watch in 'ask' mode → neutral (never silently pause anything)
+function classifyUrl(url, config = {}) {
+  if (!url) return 'neutral';
+  if (
+    url.startsWith('chrome://') ||
+    url.startsWith('brave://') ||
+    url.startsWith('edge://') ||
+    url.startsWith('about:') ||
+    url.startsWith('chrome-extension://')
+  ) return 'neutral';
+
+  const hostnamesByCategory = config.hostnamesByCategory || CATEGORY_DEFAULT_HOSTNAMES;
+
+  try {
+    const u        = new URL(url);
+    const hostname = u.hostname.replace(/^www\./, '');
+
+    for (const category of CATEGORIES) {
+      const list = hostnamesByCategory[category] || CATEGORY_DEFAULT_HOSTNAMES[category];
+      if (list.includes(hostname)) return category;
+    }
+
+    // YouTube watch pages: ambiguous — could be music, a lecture, or a movie/long-form
+    // video. music.youtube.com is already matched above via the music list.
+    // youtube.com/shorts, /channel, /playlist → neutral (browsing, not watching).
+    // m.youtube.com (mobile web) and youtu.be (short links) are treated the same
+    // as youtube.com so the ambiguity logic below applies to them too.
+    const isYoutubeHost = hostname === 'youtube.com' || hostname === 'm.youtube.com' || hostname === 'youtu.be';
+    const isWatchPath =
+      hostname === 'youtu.be' ||                      // youtu.be/<id> is always a "watch"
+      u.pathname.startsWith('/watch');
+
+    if (isYoutubeHost && isWatchPath) {
+      const mode = config.youtubeMode || 'ask';
+      if (CATEGORIES.includes(mode)) return mode;
+      // mode === 'ask': use the remembered last choice if we have one, otherwise
+      // stay neutral until the user resolves it via the popup's per-tab control.
+      if (CATEGORIES.includes(config.youtubeLastChoice)) {
+        return config.youtubeLastChoice;
+      }
+      return 'neutral';
+    }
+
+    // LinkedIn Learning
+    if (hostname === 'linkedin.com' && u.pathname.startsWith('/learning')) return 'lecture';
+
+    return 'neutral'; // Replit, GitHub, Stack Overflow, MDN, Figma, docs, etc.
+  } catch {
+    return 'neutral';
+  }
+}
+
+const STATE_KEY = 'smtm_state';
+
+const DEFAULT_STATE = {
+  musicTabId:          null,
+  lectureTabId:        null,
+  movieTabId:          null,
+  musicUrl:            null,
+  lectureUrl:          null,
+  movieUrl:            null,
+  // true when the user manually paused their music. Extension will NOT
+  // auto-resume until the user plays again or switches to the music tab.
+  userManuallyStopped: false,
+  // Tab IDs that WE muted via the Layer 2 fallback. Never unmute a tab that
+  // isn't in this list — that could be a mute the user set themselves.
+  extMutedTabIds:      [],
+  // Editable site classification lists — seeded from the DEFAULT_* arrays
+  // above on first run, then fully user-editable from the Options page.
+  musicHostnames:      [...DEFAULT_MUSIC_HOSTNAMES],
+  lectureHostnames:    [...DEFAULT_LECTURE_HOSTNAMES],
+  movieHostnames:      [...DEFAULT_MOVIE_HOSTNAMES],
+  // Conflicts awaiting a user decision, keyed by category. Persisted (not just
+  // in-memory) so the popup can render/resolve them too, and so a service-worker
+  // restart mid-conflict doesn't lose the notification's context.
+  pendingConflicts:    {},
+  settings: {
+    pauseBothWhenElsewhere: false,  // Manual mode: pause both on neutral tab
+    fadeAudio:              false,
+    notifyOnSwitch:         true,
+    smartMode:              false,
+    // Smart Mode sub-settings:
+    playMusicOnAppSwitch:   true,   // Play music when Brave loses focus (VS Code, minimise…)
+    playMusicOnWorkTabs:    true,   // Play music on neutral tabs (Replit, GitHub, docs…)
+    // YouTube ambiguity handling: 'music' | 'lecture' | 'movie' | 'ask'. Default 'ask' on
+    // first run; once the user resolves an ambiguous tab via the popup, we
+    // remember their choice in youtubeLastChoice for future unmarked tabs.
+    youtubeMode:            'ask',
+    youtubeLastChoice:      null,
+    // Per-category "which site wins" memory — remembered until the user changes it.
+    // e.g. { music: 'open.spotify.com', lecture: null, movie: null }
+    categoryPreference:     { music: null, lecture: null, movie: null },
+  },
+};
+
+function readStateRaw() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(STATE_KEY, (result) => {
+      const stored = result[STATE_KEY] || {};
+      // Migrate the old boolean `youtubeMusicMode` setting (pre-tri-state) if present.
+      let migratedYoutubeMode;
+      if (stored.settings && typeof stored.settings.youtubeMusicMode === 'boolean' && !stored.settings.youtubeMode) {
+        migratedYoutubeMode = stored.settings.youtubeMusicMode ? 'music' : 'lecture';
+      }
+      resolve({
+        ...DEFAULT_STATE,
+        ...stored,
+        settings: {
+          ...DEFAULT_STATE.settings,
+          ...(stored.settings || {}),
+          categoryPreference: {
+            ...DEFAULT_STATE.settings.categoryPreference,
+            ...((stored.settings && stored.settings.categoryPreference) || {}),
+          },
+          ...(migratedYoutubeMode ? { youtubeMode: migratedYoutubeMode } : {}),
+        },
+      });
+    });
+  });
+}
+
+async function getState() {
+  // getState is a plain read — safe to call concurrently. Only writes need serializing.
+  return readStateRaw();
+}
+
+// --- serialized state writer ---------------------------------------------
+// chrome.storage.local get→modify→set is not atomic. Two listeners
+// (onActivated + onFocusChanged) can both fire for one tab switch and race:
+// both read the same "current" snapshot, then the second write clobbers the
+// first. _stateQueue chains every setState call onto a single promise so
+// read-modify-write pairs never interleave.
+let _stateQueue = Promise.resolve();
+
+function setState(updates) {
+  const run = async () => {
+    const current = await readStateRaw();
+    const next = { ...current, ...updates };
+    await new Promise((resolve) => {
+      chrome.storage.local.set({ [STATE_KEY]: next }, resolve);
+    });
+    return next;
+  };
+  // chain onto the queue regardless of prior success/failure so one bad
+  // write can't wedge all future state updates
+  const result = _stateQueue.then(run, run);
+  _stateQueue = result.then(() => {}, () => {});
+  return result;
+}
+
+function classifyConfig(state) {
+  return {
+    hostnamesByCategory: {
+      music:   state.musicHostnames,
+      lecture: state.lectureHostnames,
+      movie:   state.movieHostnames,
+    },
+    youtubeMode:       state.settings.youtubeMode,
+    youtubeLastChoice: state.settings.youtubeLastChoice,
+  };
+}
+
+// Pinned tab IDs win over URL-based classification. A tab the user has
+// explicitly marked (via popup or Smart Mode auto-pin) is always treated
+// as that category regardless of what URL it currently shows — important
+// for two-YouTube-tabs cases and for tabs that navigate mid-session.
+// Falls back to classifyUrl when the tab isn't pinned to any category.
+function classifyTabForSwitch(tabId, url, state) {
+  if (tabId === state.musicTabId)   return 'music';
+  if (tabId === state.lectureTabId) return 'lecture';
+  if (tabId === state.movieTabId)   return 'movie';
+  return classifyUrl(url, classifyConfig(state));
+}
+
+// send to content script — inject it first if missing, return null if tab is unreachable
+async function safeSendMessage(tabId, message) {
+  if (!tabId || typeof tabId !== 'number') return null;
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch (_firstErr) {
+    // content script missing — inject and retry once
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files:  ['content.js'],
+      });
+      return await chrome.tabs.sendMessage(tabId, message);
+    } catch (_secondErr) {
+      return null; // chrome://, PDF, or injection failed
+    }
+  } finally {
+    void chrome.runtime.lastError;
+  }
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function markExtMuted(tabId, muted) {
+  const state = await getState();
+  const set = new Set(state.extMutedTabIds || []);
+  if (muted) set.add(tabId); else set.delete(tabId);
+  await setState({ extMutedTabIds: Array.from(set) });
+}
+
+async function controlTab(tabId, action, fadeAudio) {
+  if (!tabId || typeof tabId !== 'number') return;
+  if (action !== 'pause' && action !== 'play') return;
+
+  // if we own a Layer 2 mute on this tab, undo it before trying to play
+  if (action === 'play') {
+    const preState = await getState();
+    if ((preState.extMutedTabIds || []).includes(tabId)) {
+      try { await chrome.tabs.update(tabId, { muted: false }); } catch { /* tab gone */ }
+      await markExtMuted(tabId, false);
+    }
+  }
+
+  // Layer 1: real pause/play via content.js
+  const response = await safeSendMessage(tabId, { action, fadeAudio: !!fadeAudio });
+
+  await wait(action === 'pause' ? 300 : 200);
+
+  let tab;
+  try { tab = await chrome.tabs.get(tabId); } catch { return; } // tab closed mid-flight
+
+  const contentConfirmed = response && response.handled && response.confirmed === true;
+  // explicit false = content script found the element but it's still in the wrong state
+  // stronger signal than tab.audible (which can drop during silence between tracks)
+  const contentExplicitlyFailed = response && response.handled && response.confirmed === false;
+
+  if (action === 'pause') {
+    if (contentConfirmed || (tab.audible === false && !contentExplicitlyFailed)) return;
+    // Layer 1 failed or unconfirmed — mute the tab as fallback
+    try { await chrome.tabs.update(tabId, { muted: true }); } catch { return; }
+    await markExtMuted(tabId, true);
+  } else {
+    // Layer 2 for play = just unmute (done above). chrome.tabs has no play() API.
+    // If Layer 1 also failed, retry once in case the SPA player wasn't ready yet.
+    if (!contentConfirmed && tab.audible === false) {
+      await safeSendMessage(tabId, { action: 'play', fadeAudio: !!fadeAudio });
+    }
+  }
+}
+
+// Pauses every open tab classified into `category` (not just the tracked one) —
+// catches tabs that were already open before the extension noticed them.
+// Skips `exceptTabId` (the tab that just "won" and should keep playing).
+// Only bothers acting on tabs that are actually audible, to avoid pointless
+// content-script injections on silent/paused tabs.
+// `knownState`, when the caller already has a fresh state snapshot (e.g. a
+// multi-category loop in activateCategoryTab), skips a redundant storage read.
+async function pauseCategory(category, exceptTabId, fadeAudio, knownState) {
+  const state = knownState || await getState();
+  const config = classifyConfig(state);
+  const tabIdField = CATEGORY_TAB_FIELD[category];
+  const urlField   = CATEGORY_URL_FIELD[category];
+
+  let allTabs;
+  try { allTabs = await chrome.tabs.query({}); } catch { return; }
+
+  let trackedFound = !!state[tabIdField];
+
+  for (const t of allTabs) {
+    if (!t.url || t.id === exceptTabId) continue;
+    const isTracked  = t.id === state[tabIdField];
+    const classified = isTracked || classifyUrl(t.url, config) === category;
+    if (!classified) continue;
+
+    if (t.audible !== false) {
+      await controlTab(t.id, 'pause', fadeAudio);
+    }
+    if (!trackedFound) {
+      trackedFound = true;
+      await setState({ [tabIdField]: t.id, [urlField]: t.url });
+    }
+  }
+}
+
+async function updateBadge(activeTabId, state) {
+  const { musicTabId, lectureTabId, movieTabId, settings, userManuallyStopped } = state;
+
+  // Pending-conflict indicator takes priority over all other badge states.
+  // Show "!" in amber whenever any category has an unresolved conflict, so the user
+  // always knows something needs attention — even without opening the popup or relying
+  // on a system notification being seen (which requires a permission the user may deny).
+  if (Object.keys(state.pendingConflicts || {}).length > 0) {
+    try {
+      chrome.action.setBadgeText({ text: '!' });
+      chrome.action.setBadgeBackgroundColor({ color: '#FF9800' });
+    } catch (_err) { /* ignore */ }
+    return;
+  }
+
+  let text = '', color = '#555555';
+
+  if (settings.smartMode) {
+    let role = 'neutral';
+    if (activeTabId) {
+      try {
+        const tab = await chrome.tabs.get(activeTabId);
+        role = classifyUrl(tab.url, classifyConfig(state));
+      } catch { /* tab gone */ }
+    }
+    if (role === 'music')        { text = 'M'; color = '#1DB954'; }
+    else if (role === 'lecture') { text = 'L'; color = '#4285F4'; }
+    else if (role === 'movie')   { text = 'V'; color = '#E50914'; }
+    else if (musicTabId || lectureTabId || movieTabId) {
+      // On a neutral/work tab — music plays only if the feature is on AND the
+      // user hasn't explicitly stopped it (shortcut/popup pause).
+      const willPlay = settings.playMusicOnWorkTabs && !userManuallyStopped;
+      text = willPlay ? 'M' : 'S';
+      color = willPlay ? '#1DB954' : '#9C27B0';
+    }
+  } else {
+    if (activeTabId === musicTabId)        { text = 'M'; color = '#1DB954'; }
+    else if (activeTabId === lectureTabId) { text = 'L'; color = '#4285F4'; }
+  }
+
+  try {
+    chrome.action.setBadgeText({ text });
+    chrome.action.setBadgeBackgroundColor({ color });
+  } catch (_err) { /* ignore */ }
+}
+
+function sendNotification(message) {
+  try {
+    chrome.notifications.create({
+      type:    'basic',
+      iconUrl: 'icons/icon48.png',
+      title:   'Smart Media Tab Manager',
+      message,
+    });
+  } catch (_err) { /* ignore */ }
+}
+
+// --- MediaManager core: one active tab per category, everything routed through here ---
+
+// Activates `tabId` as the current tab for `category`, pausing EVERY tab in every
+// OTHER category (e.g. switching to a movie pauses music and lecture)
+// plus any leftover audible tab in its OWN category the caller didn't already resolve
+// (belt-and-braces for the "3 music tabs open" case). Sends one descriptive notification
+// summarizing what changed.
+async function activateCategoryTab(category, tabId, url, fadeAudio) {
+  const before = await getState();
+  const updates = {
+    [CATEGORY_TAB_FIELD[category]]: tabId,
+    [CATEGORY_URL_FIELD[category]]: url,
+    lastActiveCategory: category,
+  };
+  if (category === 'music') updates.userManuallyStopped = false;
+  await setState(updates);
+
+  const pausedLabels = [];
+  for (const c of CATEGORIES) {
+    const trackedId = before[CATEGORY_TAB_FIELD[c]];
+    // pass `before` through — it's already a fresh snapshot from the top of this
+    // function, so each iteration doesn't need its own chrome.storage.local.get roundtrip
+    await pauseCategory(c, tabId, fadeAudio, before);
+    if (trackedId && trackedId !== tabId) {
+      const label = c === category ? labelFor(hostnameOf(before[CATEGORY_URL_FIELD[c]])) : CATEGORY_LABEL[c];
+      pausedLabels.push(label);
+    }
+  }
+
+  await controlTab(tabId, 'play', fadeAudio);
+
+  const fresh = await getState();
+  if (fresh.settings.notifyOnSwitch) {
+    const site = labelFor(hostnameOf(url));
+    const uniquePaused = Array.from(new Set(pausedLabels));
+    const suffix = uniquePaused.length ? ` — Paused ${uniquePaused.join(', ')}` : '';
+    sendNotification(`${CATEGORY_EMOJI[category]} ${CATEGORY_LABEL[category]}: Playing ${site}${suffix}`);
+  }
+  await updateBadge(tabId, fresh);
+}
+
+// Called whenever a tab classified as music/lecture/movie becomes active. Detects
+// whether another tab of the SAME category is already audibly playing,
+// and either auto-resolves it (remembered preference) or asks the user.
+async function resolveCategoryActivation(category, tabId, url, hostname, state, fadeAudio) {
+  let allTabs;
+  try { allTabs = await chrome.tabs.query({}); } catch { allTabs = []; }
+  const config = classifyConfig(state);
+
+  // Use isTabActuallyPlaying so that a tab we layer-2-muted (extMutedTabIds) is
+  // not treated as "really playing" — it's audible:true but silent by our own hand.
+  const conflictTab = allTabs.find((t) => {
+    if (t.id === tabId || !t.url) return false;
+    if (!isTabActuallyPlaying(t, state.extMutedTabIds)) return false;
+    const isTracked = t.id === state[CATEGORY_TAB_FIELD[category]];
+    return isTracked || classifyUrl(t.url, config) === category;
+  });
+
+  if (!conflictTab) {
+    await activateCategoryTab(category, tabId, url, fadeAudio);
+    return;
+  }
+
+  // If a conflict prompt is already outstanding for this category (a third tab
+  // appeared while the user hasn't responded yet), silently pause the new tab
+  // without spawning a second notification. Only one conflict prompt per category
+  // is shown at a time.
+  const existingPending = (state.pendingConflicts || {})[category];
+  if (existingPending) {
+    await controlTab(tabId, 'pause', fadeAudio);
+    if (DEBUG_LOGGING) console.log(`[SMTM] Third ${category} tab silently paused — conflict already pending`);
+    return;
+  }
+
+  const conflictHostname = hostnameOf(conflictTab.url);
+  const preferred = (state.settings.categoryPreference || {})[category];
+
+  if (preferred && preferred === hostname) {
+    // remembered choice already favors the newly activated site — switch, no need to ask
+    await activateCategoryTab(category, tabId, url, fadeAudio);
+    return;
+  }
+  if (preferred && preferred === conflictHostname) {
+    // remembered choice favors what's already playing — keep it, quietly pause the new one
+    await controlTab(tabId, 'pause', fadeAudio);
+    return;
+  }
+
+  await askUserToChooseSource(
+    category,
+    { tabId, url, hostname },
+    { tabId: conflictTab.id, url: conflictTab.url, hostname: conflictHostname },
+    fadeAudio
+  );
+}
+
+// "Which <category> source would you like to continue?" Safe default while waiting
+// (or if the user never responds) is to pause the NEW tab and keep the one already
+// playing — never let both play. Stored in chrome.storage (not memory only) so a
+// service-worker restart or the popup can still resolve it correctly.
+async function askUserToChooseSource(category, candidate, existing, fadeAudio) {
+  await controlTab(candidate.tabId, 'pause', fadeAudio);
+
+  const notificationId = `smtm-conflict-${category}-${Date.now()}`;
+  const state = await getState();
+  const pendingConflicts = { ...(state.pendingConflicts || {}) };
+  pendingConflicts[category] = {
+    notificationId,
+    category,
+    candidate,
+    existing,
+    fadeAudio: !!fadeAudio,
+    createdAt: Date.now(),
+  };
+  await setState({ pendingConflicts });
+
+  const label = CATEGORY_LABEL[category];
+  try {
+    chrome.notifications.create(notificationId, {
+      type:    'basic',
+      iconUrl: 'icons/icon48.png',
+      title:   `${CATEGORY_EMOJI[category]} You already have ${label.toLowerCase()} playing`,
+      message: `${labelFor(existing.hostname)} is playing. Which ${label.toLowerCase()} source do you want to continue?`,
+      buttons: [
+        { title: `▶ Continue ${labelFor(candidate.hostname)}` },
+        { title: `▶ Continue ${labelFor(existing.hostname)}` },
+      ],
+      requireInteraction: true,
+    });
+  } catch (err) {
+    console.warn('[SMTM] Could not create conflict notification:', err.message);
+  }
+
+  // 15s auto-timeout: if the user never responds, default safely to keeping
+  // whatever was already playing (never leave a conflict prompt open forever).
+  clearConflictTimer(category);
+  const timeoutId = setTimeout(async () => {
+    _conflictTimeoutTimers.delete(category);
+    const fresh = await getState();
+    const stillPending = (fresh.pendingConflicts || {})[category];
+    if (!stillPending || stillPending.notificationId !== notificationId) return; // already resolved
+    await settleConflict(stillPending, 'existing');
+    try { chrome.notifications.clear(notificationId); } catch { /* ignore */ }
+  }, CONFLICT_TIMEOUT_MS);
+  _conflictTimeoutTimers.set(category, timeoutId);
+}
+
+function clearConflictTimer(category) {
+  const timeoutId = _conflictTimeoutTimers.get(category);
+  if (timeoutId != null) {
+    clearTimeout(timeoutId);
+    _conflictTimeoutTimers.delete(category);
+  }
+}
+
+// choice: 'candidate' (the newly opened tab) or 'existing' (what was already playing)
+async function settleConflict(entry, choice) {
+  const { category, candidate, existing, fadeAudio } = entry;
+  clearConflictTimer(category);
+  const state = await getState();
+  const pendingConflicts = { ...(state.pendingConflicts || {}) };
+  delete pendingConflicts[category];
+  const categoryPreference = { ...(state.settings.categoryPreference || {}) };
+
+  if (choice === 'candidate') {
+    categoryPreference[category] = candidate.hostname;
+    await setState({ pendingConflicts, settings: { ...state.settings, categoryPreference } });
+    await activateCategoryTab(category, candidate.tabId, candidate.url, fadeAudio);
+  } else {
+    categoryPreference[category] = existing.hostname;
+    await setState({
+      pendingConflicts,
+      settings: { ...state.settings, categoryPreference },
+      [CATEGORY_TAB_FIELD[category]]: existing.tabId,
+      [CATEGORY_URL_FIELD[category]]: existing.url,
+    });
+    let existingTab;
+    try { existingTab = await chrome.tabs.get(existing.tabId); } catch { existingTab = null; }
+    if (existingTab) await controlTab(existing.tabId, 'play', fadeAudio);
+    const fresh = await getState();
+    if (fresh.settings.notifyOnSwitch) {
+      sendNotification(`${CATEGORY_EMOJI[category]} Kept ${labelFor(existing.hostname)} playing — ${labelFor(candidate.hostname)} paused.`);
+    }
+  }
+}
+
+chrome.notifications.onButtonClicked.addListener(async (notificationId, buttonIndex) => {
+  const state = await getState();
+  const entry = Object.values(state.pendingConflicts || {}).find((e) => e && e.notificationId === notificationId);
+  if (!entry) return;
+  await settleConflict(entry, buttonIndex === 0 ? 'candidate' : 'existing');
+  try { chrome.notifications.clear(notificationId); } catch { /* ignore */ }
+});
+
+chrome.notifications.onClosed.addListener(async (notificationId) => {
+  const state = await getState();
+  const pendingConflicts = { ...(state.pendingConflicts || {}) };
+  const category = Object.keys(pendingConflicts).find((k) => pendingConflicts[k] && pendingConflicts[k].notificationId === notificationId);
+  if (category) {
+    clearConflictTimer(category);
+    delete pendingConflicts[category];
+    await setState({ pendingConflicts });
+  }
+});
+
+async function handleManualSwitch(activeTabId, activeWindowId, state) {
+  const { musicTabId, lectureTabId, settings } = state;
+  if (!musicTabId && !lectureTabId) return;
+
+  const isMusic   = activeTabId === musicTabId;
+  const isLecture = activeTabId === lectureTabId;
+
+  if (!isMusic && !isLecture) {
+    let markedInWindow = false;
+    for (const tabId of [musicTabId, lectureTabId]) {
+      if (!tabId) continue;
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab && tab.windowId === activeWindowId) { markedInWindow = true; break; }
+      } catch { /* tab gone */ }
+    }
+    if (!markedInWindow) return;
+
+    if (settings.pauseBothWhenElsewhere) {
+      await controlTab(musicTabId,   'pause', settings.fadeAudio);
+      await controlTab(lectureTabId, 'pause', settings.fadeAudio);
+      if (settings.notifyOnSwitch) sendNotification('Both tabs paused.');
+    }
+    await updateBadge(activeTabId, state);
+    return;
+  }
+
+  if (isMusic) {
+    // switching to music = user wants to listen, clear the manual-stop flag
+    await setState({ userManuallyStopped: false });
+    await controlTab(musicTabId,   'play',  settings.fadeAudio);
+    await controlTab(lectureTabId, 'pause', settings.fadeAudio);
+    if (settings.notifyOnSwitch) sendNotification('Music resumed, lecture paused.');
+  } else {
+    await controlTab(lectureTabId, 'play',  settings.fadeAudio);
+    await controlTab(musicTabId,   'pause', settings.fadeAudio);
+    if (settings.notifyOnSwitch) sendNotification('Lecture resumed, music paused.');
+  }
+
+  await updateBadge(activeTabId, await getState());
+}
+
+// smart mode core: routes activation through the MediaManager (activateCategoryTab /
+// resolveCategoryActivation) so multiple tabs of the same category never both play,
+// and activating any one of music/lecture/movie pauses the other two categories.
+// Manual ID markings win over URL classification (handles two YouTube tabs case).
+async function handleSmartSwitch(activeTabId, activeWindowId, state) {
+  let tab;
+  try { tab = await chrome.tabs.get(activeTabId); } catch { return; }
+
+  const { settings } = state;
+  const role = classifyTabForSwitch(activeTabId, tab.url, state);
+
+  if (CATEGORIES.includes(role)) {
+    const hostname = hostnameOf(tab.url);
+    await resolveCategoryActivation(role, activeTabId, tab.url, hostname, state, settings.fadeAudio);
+  } else {
+    // neutral/work tab (Replit, GitHub, etc.) — lecture never plays unattended,
+    // so sweep for any lecture tab still audible in the background and pause it.
+    await pauseCategory('lecture', null, settings.fadeAudio);
+
+    if (settings.playMusicOnWorkTabs && state.musicTabId && !state.userManuallyStopped) {
+      await controlTab(state.musicTabId, 'play', settings.fadeAudio);
+    } else if (!settings.playMusicOnWorkTabs && settings.pauseBothWhenElsewhere) {
+      let markedInWindow = false;
+      for (const tabId of [state.musicTabId, state.lectureTabId, state.movieTabId]) {
+        if (!tabId) continue;
+        try {
+          const t = await chrome.tabs.get(tabId);
+          if (t.windowId === activeWindowId) { markedInWindow = true; break; }
+        } catch { /* tab gone */ }
+      }
+      if (markedInWindow) {
+        await controlTab(state.musicTabId,   'pause', settings.fadeAudio);
+        await controlTab(state.lectureTabId, 'pause', settings.fadeAudio);
+      }
+    }
+  }
+
+  await updateBadge(activeTabId, await getState());
+}
+
+// fires when Brave loses focus entirely (Alt+Tab, minimise, lock screen)
+async function handleAppBlur() {
+  const state = await getState();
+  if (!state.settings.smartMode || !state.settings.playMusicOnAppSwitch) return;
+  if (!state.musicTabId) return;
+  if (state.userManuallyStopped) return;
+  if (checkCooldown(state.musicTabId, 'appBlur')) return;
+
+  await controlTab(state.musicTabId, 'play', state.settings.fadeAudio);
+  await pauseCategory('lecture', state.musicTabId, state.settings.fadeAudio);
+
+  if (state.settings.notifyOnSwitch) {
+    sendNotification('Brave is in the background — music is playing.');
+  }
+}
+
+// Shared helper: switch focus/playback between the two pinned tabs, or (when
+// neither is currently active) jump to whichever one is pinned and make sure
+// its counterpart is paused. Used by the "toggle-mode" keyboard shortcut.
+async function switchBetweenPinnedTabs(musicTabId, lectureTabId, settings, source) {
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!activeTab) return;
+
+  if (activeTab.id === musicTabId) {
+    if (!lectureTabId) return;
+    setExplicitCooldown(musicTabId,   source, 'switchAway');
+    setExplicitCooldown(lectureTabId, source, 'switchTo');
+    await controlTab(lectureTabId, 'play',  settings.fadeAudio);
+    await controlTab(musicTabId,   'pause', settings.fadeAudio);
+    await chrome.tabs.update(lectureTabId, { active: true });
+    return;
+  }
+
+  if (activeTab.id === lectureTabId) {
+    if (!musicTabId) return;
+    setExplicitCooldown(lectureTabId, source, 'switchAway');
+    setExplicitCooldown(musicTabId,   source, 'switchTo');
+    await controlTab(musicTabId,   'play',  settings.fadeAudio);
+    await controlTab(lectureTabId, 'pause', settings.fadeAudio);
+    await chrome.tabs.update(musicTabId, { active: true });
+    return;
+  }
+
+  // Neither pinned tab is active — jump to whichever one is pinned (lecture
+  // takes priority) and make sure the OTHER pinned tab is paused, since no
+  // onActivated/onFocusChanged auto-trigger will fix this up: we've just set
+  // an explicit cooldown on the target tab, which would suppress it anyway.
+  const targetId = lectureTabId || musicTabId;
+  if (!targetId) return;
+
+  setExplicitCooldown(targetId, source, 'switchTo');
+  if (targetId === lectureTabId && musicTabId) {
+    setExplicitCooldown(musicTabId, source, 'switchAway');
+    await controlTab(musicTabId, 'pause', settings.fadeAudio);
+  } else if (targetId === musicTabId && lectureTabId) {
+    setExplicitCooldown(lectureTabId, source, 'switchAway');
+    await controlTab(lectureTabId, 'pause', settings.fadeAudio);
+  }
+  await controlTab(targetId, 'play', settings.fadeAudio);
+  await chrome.tabs.update(targetId, { active: true });
+}
+
+async function handleTabSwitch(activeTabId, activeWindowId) {
+  // onActivated and onFocusChanged can both fire for the same physical
+  // switch to the same tab — collapse them into a single handled event.
+  const now = Date.now();
+  if (
+    _lastHandledSwitch.tabId === activeTabId &&
+    now - _lastHandledSwitch.time < DUPLICATE_SWITCH_MS
+  ) {
+    return;
+  }
+  _lastHandledSwitch = { tabId: activeTabId, time: now };
+
+  if (checkCooldown(activeTabId, 'tabSwitch')) return;
+
+  const state = await getState();
+  if (state.settings.smartMode) {
+    await handleSmartSwitch(activeTabId, activeWindowId, state);
+  } else {
+    await handleManualSwitch(activeTabId, activeWindowId, state);
+  }
+}
+
+chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
+  await handleTabSwitch(tabId, windowId);
+});
+
+chrome.windows.onFocusChanged.addListener(async (windowId) => {
+  if (windowId === chrome.windows.WINDOW_ID_NONE) {
+    await handleAppBlur();
+    return;
+  }
+  try {
+    const [activeTab] = await chrome.tabs.query({ active: true, windowId });
+    if (activeTab) await handleTabSwitch(activeTab.id, windowId);
+  } catch { /* window closed between event and query */ }
+});
+
+// re-classify when a tab navigates (Spotify track change, new YouTube video, etc.)
+//
+// SPAs (Spotify, YouTube) can fire several url-changing onUpdated events within a
+// few milliseconds of each other for what's really a single navigation (e.g. a
+// query-param update immediately followed by the real path change). Without
+// debouncing, each one independently reads state, re-classifies, and potentially
+// calls activateCategoryTab — redundant work that all converges on the same
+// final classification anyway. Coalesce bursts per-tab into a single classify
+// pass, same behavior/outcome, fewer storage reads and content-script round trips.
+const TAB_UPDATE_DEBOUNCE_MS = 200;
+const _tabUpdateTimers = new Map(); // tabId -> timeoutId
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  // ── URL change: re-classify the active tab after SPA navigation ──────────
+  // Debounced so rapid query-param updates (YouTube autoplay-next, Spotify track
+  // changes) don't each independently trigger a full classify+pause round trip.
+  if (changeInfo.url) {
+    const existing = _tabUpdateTimers.get(tabId);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(async () => {
+      _tabUpdateTimers.delete(tabId);
+      const state = await getState();
+      if (!state.settings.smartMode) return;
+      if (checkCooldown(tabId, 'tabUpdated')) return;
+      try {
+        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!activeTab || activeTab.id !== tabId) return;
+        await handleSmartSwitch(tabId, tab.windowId, state);
+      } catch { /* ignore */ }
+    }, TAB_UPDATE_DEBOUNCE_MS);
+
+    _tabUpdateTimers.set(tabId, timer);
+  }
+
+  // ── Audible change: background-tab autoplay detection ────────────────────
+  // onActivated / onFocusChanged only fire when the USER switches to a tab.
+  // If two same-category tabs both autoplay in the background (e.g. two YouTube
+  // tabs opening, or Spotify already playing then YouTube Music starts in a
+  // background tab), nothing else catches them. This handler fires on ANY tab
+  // becoming audible, regardless of which tab has focus.
+  if (changeInfo.audible === true) {
+    (async () => {
+      try {
+        const state = await getState();
+        // Manual Mode never uses URL-based conflict detection.
+        if (!state.settings.smartMode) return;
+        if (checkCooldown(tabId, 'tabAudible')) return;
+
+        // changeInfo doesn't carry tab.url — fetch the live object for URL/hostname.
+        let liveTab;
+        try { liveTab = await chrome.tabs.get(tabId); } catch { return; }
+
+        const role = classifyTabForSwitch(tabId, liveTab.url, state);
+        if (!CATEGORIES.includes(role)) return; // neutral tab became audible — ignore
+
+        const hostname = hostnameOf(liveTab.url);
+        await resolveCategoryActivation(role, tabId, liveTab.url, hostname, state, state.settings.fadeAudio);
+      } catch { /* ignore — tab may have closed between event and handler */ }
+    })();
+  }
+});
+
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  const state   = await getState();
+  const updates = {};
+  if (tabId === state.musicTabId)   { updates.musicTabId = null;   updates.musicUrl = null;   }
+  if (tabId === state.lectureTabId) { updates.lectureTabId = null; updates.lectureUrl = null; }
+  if (tabId === state.movieTabId)   { updates.movieTabId = null;   updates.movieUrl = null;   }
+  if ((state.extMutedTabIds || []).includes(tabId)) {
+    updates.extMutedTabIds = state.extMutedTabIds.filter((id) => id !== tabId);
+  }
+  // Cancel any pending conflict prompt that referenced the tab that just closed —
+  // otherwise its notification buttons would try to act on a dead tab.
+  const pendingConflicts = { ...(state.pendingConflicts || {}) };
+  let conflictsChanged = false;
+  for (const [cat, entry] of Object.entries(pendingConflicts)) {
+    if (entry && (entry.candidate.tabId === tabId || entry.existing.tabId === tabId)) {
+      clearConflictTimer(cat);
+      try { chrome.notifications.clear(entry.notificationId); } catch { /* ignore */ }
+      delete pendingConflicts[cat];
+      conflictsChanged = true;
+    }
+  }
+  if (conflictsChanged) updates.pendingConflicts = pendingConflicts;
+
+  if (Object.keys(updates).length > 0) {
+    await setState(updates);
+    // Recalculate the badge rather than blindly clearing it. If this tab was
+    // involved in a pending conflict, clearing the conflict should switch the
+    // badge from '!' back to whatever the current active-tab state actually is
+    // (M / L / V / S / blank), not leave it blank unconditionally.
+    try {
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      await updateBadge(activeTab ? activeTab.id : null, await getState());
+    } catch { try { chrome.action.setBadgeText({ text: '' }); } catch { /* ignore */ } }
+  }
+  // Clean up stale cooldown entries.
+  _explicitCooldown.delete(tabId);
+  if (_lastHandledSwitch.tabId === tabId) _lastHandledSwitch = { tabId: null, time: 0 };
+  // Cancel any pending debounced onUpdated classification for this tab — it's
+  // gone, so there's nothing left to classify once the timer fires.
+  const pendingUpdateTimer = _tabUpdateTimers.get(tabId);
+  if (pendingUpdateTimer) {
+    clearTimeout(pendingUpdateTimer);
+    _tabUpdateTimers.delete(tabId);
+  }
+});
+
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command !== 'toggle-mode') return;
+  const state = await getState();
+  const { musicTabId, lectureTabId, settings } = state;
+  if (!musicTabId && !lectureTabId) return;
+  try {
+    await switchBetweenPinnedTabs(musicTabId, lectureTabId, settings, 'shortcut');
+  } catch { /* tab gone */ }
+});
+
+function sanitizeHostnameList(list) {
+  if (!Array.isArray(list)) return null;
+  const cleaned = list
+    .map((h) => String(h || '').trim().toLowerCase().replace(/^www\./, ''))
+    .filter((h) => h.length > 0);
+  return Array.from(new Set(cleaned));
+}
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  (async () => {
+    try {
+      switch (message.action) {
+        case 'setMusicTab':
+          await setState({ musicTabId: message.tabId, musicUrl: message.url });
+          sendResponse({ success: true });
+          break;
+        case 'setLectureTab':
+          await setState({ lectureTabId: message.tabId, lectureUrl: message.url });
+          sendResponse({ success: true });
+          break;
+        case 'setMovieTab':
+          await setState({ movieTabId: message.tabId, movieUrl: message.url });
+          sendResponse({ success: true });
+          break;
+        case 'clearBoth':
+          await setState({
+            musicTabId: null, lectureTabId: null, movieTabId: null,
+            musicUrl: null,   lectureUrl: null,   movieUrl: null,
+          });
+          try { chrome.action.setBadgeText({ text: '' }); } catch { /* ignore */ }
+          sendResponse({ success: true });
+          break;
+        case 'getState': {
+          const fullState = await getState();
+          sendResponse({
+            success: true,
+            state: {
+              ...fullState,
+              // include defaults so Options page can do reset without re-declaring them
+              defaultMusicHostnames:   DEFAULT_MUSIC_HOSTNAMES,
+              defaultLectureHostnames: DEFAULT_LECTURE_HOSTNAMES,
+              defaultMovieHostnames:   DEFAULT_MOVIE_HOSTNAMES,
+            },
+          });
+          break;
+        }
+        case 'classifyUrl': {
+          const s = await getState();
+          sendResponse({ success: true, role: classifyUrl(message.url, classifyConfig(s)) });
+          break;
+        }
+        case 'resolveYoutubeAmbiguity': {
+          const role = message.role; // 'music' | 'lecture' | 'movie'
+          if (!CATEGORIES.includes(role)) {
+            sendResponse({ success: false, error: 'Invalid role' });
+            break;
+          }
+          const sYt = await getState();
+          const updates = {
+            [CATEGORY_TAB_FIELD[role]]: message.tabId,
+            [CATEGORY_URL_FIELD[role]]: message.url,
+          };
+          if (sYt.settings.youtubeMode === 'ask') {
+            updates.settings = { ...sYt.settings, youtubeLastChoice: role };
+          }
+          await setState(updates);
+          sendResponse({ success: true });
+          break;
+        }
+        case 'resolveConflict': {
+          const category = message.category;
+          const s = await getState();
+          const entry = (s.pendingConflicts || {})[category];
+          if (!entry) { sendResponse({ success: false, error: 'No pending conflict for this category' }); break; }
+          await settleConflict(entry, message.choice === 'candidate' ? 'candidate' : 'existing');
+          try { chrome.notifications.clear(entry.notificationId); } catch { /* ignore */ }
+          sendResponse({ success: true });
+          break;
+        }
+        case 'saveOptions': {
+          const patch = {};
+          const current = await getState();
+          if (message.settings && typeof message.settings === 'object') {
+            patch.settings = { ...current.settings, ...message.settings };
+          }
+          const cleanedMusic   = sanitizeHostnameList(message.musicHostnames);
+          const cleanedLecture = sanitizeHostnameList(message.lectureHostnames);
+          const cleanedMovie   = sanitizeHostnameList(message.movieHostnames);
+          // Only overwrite the stored list when the user actually supplied at
+          // least one hostname — an empty textarea submit should NOT silently
+          // wipe the list down to nothing; use the Options "reset" action for that.
+          if (cleanedMusic && cleanedMusic.length > 0)     patch.musicHostnames   = cleanedMusic;
+          if (cleanedLecture && cleanedLecture.length > 0) patch.lectureHostnames = cleanedLecture;
+          if (cleanedMovie && cleanedMovie.length > 0)     patch.movieHostnames   = cleanedMovie;
+          if (message.forgetPreferences) {
+            patch.settings = {
+              ...(patch.settings || current.settings),
+              categoryPreference: { music: null, lecture: null, movie: null },
+            };
+          }
+          await setState(patch);
+          sendResponse({ success: true, state: await getState() });
+          break;
+        }
+        // only care about manual pauses on music tabs — pausing a lecture shouldn't block auto-resume
+        case 'userManualPause': {
+          const sForPause = await getState();
+          const senderTabId = _sender && _sender.tab && _sender.tab.id;
+          const senderUrl   = _sender && _sender.tab && _sender.tab.url;
+          const isMusicSender =
+            senderTabId === sForPause.musicTabId ||
+            classifyUrl(senderUrl, classifyConfig(sForPause)) === 'music';
+          if (isMusicSender) {
+            await setState({ userManuallyStopped: true });
+          }
+          sendResponse({ success: true });
+          break;
+        }
+        case 'userManualPlay': {
+          const sForPlay = await getState();
+          const senderTabIdP = _sender && _sender.tab && _sender.tab.id;
+          const senderUrlP   = _sender && _sender.tab && _sender.tab.url;
+          const isMusicSenderP =
+            senderTabIdP === sForPlay.musicTabId ||
+            classifyUrl(senderUrlP, classifyConfig(sForPlay)) === 'music';
+          if (isMusicSenderP) {
+            await setState({ userManuallyStopped: false });
+          }
+          sendResponse({ success: true });
+          break;
+        }
+        default:
+          sendResponse({ success: false, error: 'Unknown action' });
+      }
+    } catch (err) {
+      console.error('[SMTM] Error handling message', message && message.action, err);
+      sendResponse({ success: false, error: err.message });
+    }
+  })();
+  return true;
+});
