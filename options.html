@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Smart Media Tab Manager — Settings</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="header">
+      <div class="header-inner">
+        <img src="icons/icon48.png" alt="" class="logo" />
+        <div>
+          <h1 class="heading">Smart Media Tab Manager</h1>
+          <p class="subtitle">Settings</p>
+        </div>
+      </div>
+    </header>
+
+    <main class="main">
+
+      <!-- ── Smart Mode ──────────────────────────────────────────────── -->
+      <section class="card smart-card">
+        <h2 class="section-title">
+          Smart Mode
+          <span class="new-badge">RECOMMENDED</span>
+        </h2>
+
+        <div class="option-row">
+          <div class="option-info">
+            <label class="option-label" for="smartMode">
+              Auto-detect music and lecture tabs by URL
+            </label>
+            <p class="option-desc">
+              No manual marking needed. The extension automatically recognises
+              Spotify, YouTube Music, SoundCloud, Udemy, Coursera, YouTube watch pages, and
+              more — and handles switching between them instantly.
+            </p>
+          </div>
+          <label class="toggle" aria-label="Smart Mode">
+            <input type="checkbox" id="smartMode" />
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <!-- ── Editable site lists ─────────────────────────────────────── -->
+        <div class="option-row sub-row site-list-row">
+          <div class="option-info full-width">
+            <label class="option-label" for="musicHostnames">Music sites (one hostname per line)</label>
+            <p class="option-desc">
+              Add or remove sites yourself — no code changes needed. Edited lists take over
+              completely from the built-in defaults once you save.
+            </p>
+            <textarea id="musicHostnames" class="host-list-textarea" spellcheck="false" rows="8"></textarea>
+            <button type="button" class="reset-list-btn" id="reset-music-list">Reset to defaults</button>
+          </div>
+        </div>
+
+        <div class="option-row sub-row site-list-row">
+          <div class="option-info full-width">
+            <label class="option-label" for="lectureHostnames">Lecture sites (one hostname per line)</label>
+            <p class="option-desc">
+              Same idea — one hostname per line (e.g. <code>udemy.com</code>). <code>youtube.com/watch</code>
+              is handled separately below since it's ambiguous by design.
+            </p>
+            <textarea id="lectureHostnames" class="host-list-textarea" spellcheck="false" rows="8"></textarea>
+            <button type="button" class="reset-list-btn" id="reset-lecture-list">Reset to defaults</button>
+          </div>
+        </div>
+
+        <div class="option-row sub-row site-list-row">
+          <div class="option-info full-width">
+            <label class="option-label" for="movieHostnames">Movie/TV sites (one hostname per line)</label>
+            <p class="option-desc">
+              Netflix, Prime Video, Disney+, Hotstar, and similar streaming sites. Playing one of these
+              pauses your music and lecture tabs. Self-hosted players (Jellyfin, Plex on your LAN, etc.)
+              don't have a fixed public hostname — add yours here manually if you use one.
+            </p>
+            <textarea id="movieHostnames" class="host-list-textarea" spellcheck="false" rows="8"></textarea>
+            <button type="button" class="reset-list-btn" id="reset-movie-list">Reset to defaults</button>
+          </div>
+        </div>
+
+        <!-- Sub-settings — only shown when Smart Mode is on -->
+        <div id="smart-sub-settings">
+
+          <div class="option-row sub-row">
+            <div class="option-info">
+              <label class="option-label" for="playMusicOnWorkTabs">
+                Play music on coding and work tabs
+              </label>
+              <p class="option-desc">
+                Lecture is the only thing that pauses music. Switching to Replit,
+                GitHub, Stack Overflow, documentation, or any other site
+                automatically resumes your music. <strong>Recommended on.</strong>
+              </p>
+              <div class="example-row">
+                <span class="example-chip neutral-chip">Replit</span>
+                <span class="example-chip neutral-chip">GitHub</span>
+                <span class="example-chip neutral-chip">Stack Overflow</span>
+                <span class="example-chip neutral-chip">MDN</span>
+                <span class="example-chip neutral-chip">ChatGPT</span>
+              </div>
+            </div>
+            <label class="toggle" aria-label="Play music on work tabs">
+              <input type="checkbox" id="playMusicOnWorkTabs" />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="option-row sub-row">
+            <div class="option-info">
+              <label class="option-label" for="playMusicOnAppSwitch">
+                Play music when you switch to another app
+              </label>
+              <p class="option-desc">
+                When Brave (or Chrome) loses window focus — Alt+Tab to VS Code,
+                Terminal, Figma, etc. — music automatically plays. Useful for
+                "I'm coding, keep the music going."
+              </p>
+              <div class="example-row">
+                <span class="example-chip app-chip">VS Code</span>
+                <span class="example-chip app-chip">Terminal</span>
+                <span class="example-chip app-chip">Figma</span>
+                <span class="example-chip app-chip">Minimise</span>
+              </div>
+            </div>
+            <label class="toggle" aria-label="Play music on app switch">
+              <input type="checkbox" id="playMusicOnAppSwitch" />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <!-- YouTube ambiguity -->
+          <div class="option-row sub-row">
+            <div class="option-info full-width">
+              <label class="option-label">YouTube ambiguity (youtube.com/watch)</label>
+              <p class="option-desc">
+                <code>youtube.com/watch</code> can be either music or lecture.
+                Choose a default, or let the popup ask you each time.
+              </p>
+              <div class="radio-group" role="radiogroup" aria-label="YouTube mode">
+                <label class="radio-label">
+                  <input type="radio" name="youtubeMode" value="music" />
+                  <span>Always Music 🎵</span>
+                </label>
+                <label class="radio-label">
+                  <input type="radio" name="youtubeMode" value="lecture" />
+                  <span>Always Lecture 📚</span>
+                </label>
+                <label class="radio-label">
+                  <input type="radio" name="youtubeMode" value="movie" />
+                  <span>Always Movie/TV 🎬</span>
+                </label>
+                <label class="radio-label">
+                  <input type="radio" name="youtubeMode" value="ask" />
+                  <span>Ask me each time</span>
+                </label>
+              </div>
+              <p class="option-desc hidden" id="youtube-last-choice-note"></p>
+            </div>
+          </div>
+
+          <!-- Remembered same-category conflict choices -->
+          <div class="option-row sub-row">
+            <div class="option-info full-width">
+              <label class="option-label">Remembered "which source to continue" choices</label>
+              <p class="option-desc" id="category-preference-summary">
+                No remembered choices yet.
+              </p>
+              <button type="button" class="reset-list-btn" id="forget-preferences-btn">Forget remembered choices</button>
+            </div>
+          </div>
+
+        </div><!-- end #smart-sub-settings -->
+
+      </section>
+
+      <!-- ── Manual Mode sub-setting ──────────────────────────────────── -->
+      <section class="card">
+        <h2 class="section-title">
+          Manual Mode
+          <span class="manual-tag">MANUAL</span>
+        </h2>
+        <div class="option-row">
+          <div class="option-info">
+            <label class="option-label" for="pauseBothWhenElsewhere">
+              Pause both tabs when switching to a neutral tab
+            </label>
+            <p class="option-desc">
+              In Manual Mode, switching to a tab that isn't marked as music or
+              lecture pauses both. Default: off (music keeps playing).
+            </p>
+          </div>
+          <label class="toggle" aria-label="Pause both when elsewhere">
+            <input type="checkbox" id="pauseBothWhenElsewhere" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </section>
+
+      <!-- ── Audio ──────────────────────────────────────────────────────── -->
+      <section class="card">
+        <h2 class="section-title">Audio</h2>
+        <div class="option-row">
+          <div class="option-info">
+            <label class="option-label" for="fadeAudio">
+              Fade audio instead of instant cut
+            </label>
+            <p class="option-desc">
+              Ramps volume over ~500ms when pausing/resuming — less jarring than
+              an instant cut. The Layer 2 mute fallback stays instant regardless.
+            </p>
+          </div>
+          <label class="toggle" aria-label="Fade audio">
+            <input type="checkbox" id="fadeAudio" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </section>
+
+      <!-- ── Notifications ────────────────────────────────────────────── -->
+      <section class="card">
+        <h2 class="section-title">Notifications</h2>
+        <div class="option-row">
+          <div class="option-info">
+            <label class="option-label" for="notifyOnSwitch">
+              Show desktop notification on switch
+            </label>
+            <p class="option-desc">
+              Brief system notification each time playback switches. Default: on.
+              Also used for same-category conflict alerts (e.g. two music tabs playing at once).
+            </p>
+          </div>
+          <label class="toggle" aria-label="Notify on switch">
+            <input type="checkbox" id="notifyOnSwitch" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </section>
+
+      <!-- ── Keyboard Shortcut ─────────────────────────────────────────── -->
+      <section class="card">
+        <h2 class="section-title">Keyboard Shortcut</h2>
+        <div class="shortcut-block">
+          <p class="option-desc">Toggle between music and lecture mode without clicking.</p>
+          <div class="shortcut-keys">
+            <kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>M</kbd>
+          </div>
+          <p class="option-desc mac-note">
+            On Mac: <kbd>Command</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>M</kbd>
+          </p>
+          <p class="option-desc">
+            Remap in <a href="chrome://extensions/shortcuts" class="link">chrome://extensions/shortcuts</a>.
+          </p>
+        </div>
+      </section>
+
+      <div class="save-row">
+        <button class="save-btn" id="save-btn">Save settings</button>
+        <span class="save-status hidden" id="save-status" role="status">Saved!</span>
+      </div>
+    </main>
+  </div>
+  <script src="options.js"></script>
+</body>
+</html>
