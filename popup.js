@@ -258,9 +258,10 @@ async function render(state) {
   }
 
   // audible indicator — reuses the tab objects already fetched above, no extra IPC calls
-  musicAudibleTag.classList.toggle('hidden', !(musicTabId && musicValid && musicInfo.tab && musicInfo.tab.audible));
-  lectureAudibleTag.classList.toggle('hidden', !(lectureTabId && lectureValid && lectureInfo.tab && lectureInfo.tab.audible));
-  movieAudibleTag.classList.toggle('hidden', !(movieTabId && movieValid && movieInfo.tab && movieInfo.tab.audible));
+  const isPlaying = (info) => info && info.tab && info.tab.audible && !(state.extMutedTabIds || []).includes(info.tab.id);
+  musicAudibleTag.classList.toggle('hidden', !(musicTabId && musicValid && isPlaying(musicInfo)));
+  lectureAudibleTag.classList.toggle('hidden', !(lectureTabId && lectureValid && isPlaying(lectureInfo)));
+  movieAudibleTag.classList.toggle('hidden', !(movieTabId && movieValid && isPlaying(movieInfo)));
 
   // status dot
   const activeId = activeTab ? activeTab.id : null;
@@ -386,6 +387,16 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName === 'local') {
     loadAndRender();
   }
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.audible !== undefined || changeInfo.title !== undefined || changeInfo.url !== undefined) {
+    loadAndRender();
+  }
+});
+
+chrome.tabs.onActivated.addListener(() => {
+  loadAndRender();
 });
 
 loadAndRender();

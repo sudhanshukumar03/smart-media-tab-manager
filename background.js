@@ -250,7 +250,7 @@ function hostnameOf(url) {
 // report audible:true while producing no actual sound. Always use this helper
 // instead of checking tab.audible directly in conflict-detection paths.
 function isTabActuallyPlaying(tab, extMutedTabIds) {
-  return tab.audible === true && !(extMutedTabIds || []).includes(tab.id);
+  return !!tab && tab.audible === true && !(extMutedTabIds || []).includes(tab.id);
 }
 
 // returns 'music' | 'lecture' | 'movie' | 'neutral'
@@ -926,6 +926,12 @@ async function handleSmartSwitch(activeTabId, activeWindowId, state) {
     await pauseCategory('movie', null, settings.fadeAudio);
 
     let musicTabId = state.musicTabId;
+    if (musicTabId) {
+      const exists = await chrome.tabs.get(musicTabId).catch(() => null);
+      if (!exists) {
+        musicTabId = null;
+      }
+    }
     if (!musicTabId) {
       const allTabs = await chrome.tabs.query({}).catch(() => []);
       const config = classifyConfig(state);
@@ -967,6 +973,12 @@ async function handleAppBlur() {
   if (state.userManuallyStopped) return;
 
   let musicTabId = state.musicTabId;
+  if (musicTabId) {
+    const exists = await chrome.tabs.get(musicTabId).catch(() => null);
+    if (!exists) {
+      musicTabId = null;
+    }
+  }
   if (!musicTabId) {
     const allTabs = await chrome.tabs.query({}).catch(() => []);
     const config = classifyConfig(state);
@@ -1147,14 +1159,31 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
       // If a tracked tab navigated, keep its stored URL updated
       const urlUpdates = {};
-      if (tabId === state.musicTabId && state.musicUrl !== changeInfo.url) {
-        urlUpdates.musicUrl = changeInfo.url;
+      const newRole = classifyUrl(changeInfo.url, classifyConfig(state));
+
+      if (tabId === state.musicTabId) {
+        if (state.settings.smartMode && newRole !== 'music') {
+          urlUpdates.musicTabId = null;
+          urlUpdates.musicUrl = null;
+        } else if (state.musicUrl !== changeInfo.url) {
+          urlUpdates.musicUrl = changeInfo.url;
+        }
       }
-      if (tabId === state.lectureTabId && state.lectureUrl !== changeInfo.url) {
-        urlUpdates.lectureUrl = changeInfo.url;
+      if (tabId === state.lectureTabId) {
+        if (state.settings.smartMode && newRole !== 'lecture') {
+          urlUpdates.lectureTabId = null;
+          urlUpdates.lectureUrl = null;
+        } else if (state.lectureUrl !== changeInfo.url) {
+          urlUpdates.lectureUrl = changeInfo.url;
+        }
       }
-      if (tabId === state.movieTabId && state.movieUrl !== changeInfo.url) {
-        urlUpdates.movieUrl = changeInfo.url;
+      if (tabId === state.movieTabId) {
+        if (state.settings.smartMode && newRole !== 'movie') {
+          urlUpdates.movieTabId = null;
+          urlUpdates.movieUrl = null;
+        } else if (state.movieUrl !== changeInfo.url) {
+          urlUpdates.movieUrl = changeInfo.url;
+        }
       }
       if (Object.keys(urlUpdates).length > 0) {
         await setState(urlUpdates);
@@ -1163,9 +1192,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       if (!state.settings.smartMode) return;
       if (checkCooldown(tabId, 'tabUpdated')) return;
       try {
-        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const [activeTab] = await chrome.tabs.query({ active: true, windowId: tab.windowId });
         if (!activeTab || activeTab.id !== tabId) return;
-        await handleSmartSwitch(tabId, tab.windowId, state);
+        await handleSmartSwitch(tabId, tab.windowId, await getState());
       } catch { /* ignore */ }
     }, TAB_UPDATE_DEBOUNCE_MS);
 
@@ -1227,9 +1256,22 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
               const hostname = hostnameOf(liveTab.url);
               await resolveCategoryActivation(role, tabId, liveTab.url, hostname, state, state.settings.fadeAudio);
             } else {
-              // Active neutral tab became audible — pause background music so both don't play
-              if (state.musicTabId && tabId !== state.musicTabId) {
-                await controlTab(state.musicTabId, 'pause', state.settings.fadeAudio);
+              // Active neutral tab became audible — pause background music and all other background audio
+              let musicTabId = state.musicTabId;
+              if (!musicTabId) {
+                const allTabs = await chrome.tabs.query({}).catch(() => []);
+                const config = classifyConfig(state);
+                const found = allTabs.find((t) => t.url && classifyUrl(t.url, config) === 'music');
+                if (found) musicTabId = found.id;
+              }
+              if (musicTabId && tabId !== musicTabId) {
+                await controlTab(musicTabId, 'pause', state.settings.fadeAudio);
+              }
+              const allTabs = await chrome.tabs.query({}).catch(() => []);
+              for (const t of allTabs) {
+                if (t.id !== tabId && isTabActuallyPlaying(t, state.extMutedTabIds)) {
+                  await controlTab(t.id, 'pause', state.settings.fadeAudio);
+                }
               }
             }
           }
@@ -1282,7 +1324,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     (async () => {
       try {
         const state = await getState();
-        if (state.userManuallyStopped || !state.musicTabId || tabId === state.musicTabId) return;
+        if (state.userManuallyStopped) return;
 
         let [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
         if (!activeTab || activeTab.id !== tabId) return; // only care if the ACTIVE tab went silent
@@ -1295,11 +1337,28 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
           : !state.settings.pauseBothWhenElsewhere;
 
         if (shouldResume) {
-          const allTabs = await chrome.tabs.query({}).catch(() => []);
-          const anyOtherAudible = allTabs.some((t) => t.id !== state.musicTabId && isTabActuallyPlaying(t, state.extMutedTabIds));
-          if (!anyOtherAudible) {
-            await controlTab(state.musicTabId, 'play', state.settings.fadeAudio);
-            await updateBadge(tabId, await getState());
+          let musicTabId = state.musicTabId;
+          if (musicTabId) {
+            const exists = await chrome.tabs.get(musicTabId).catch(() => null);
+            if (!exists) musicTabId = null;
+          }
+          if (!musicTabId && state.settings.smartMode) {
+            const allTabs = await chrome.tabs.query({}).catch(() => []);
+            const config = classifyConfig(state);
+            const foundMusicTab = allTabs.find((t) => t.url && classifyUrl(t.url, config) === 'music');
+            if (foundMusicTab) {
+              musicTabId = foundMusicTab.id;
+              await setState({ musicTabId: foundMusicTab.id, musicUrl: foundMusicTab.url });
+            }
+          }
+
+          if (musicTabId && tabId !== musicTabId) {
+            const allTabs = await chrome.tabs.query({}).catch(() => []);
+            const anyOtherAudible = allTabs.some((t) => t.id !== musicTabId && isTabActuallyPlaying(t, state.extMutedTabIds));
+            if (!anyOtherAudible) {
+              await controlTab(musicTabId, 'play', state.settings.fadeAudio);
+              await updateBadge(tabId, await getState());
+            }
           }
         }
       } catch { /* ignore */ }
@@ -1604,7 +1663,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             break;
           }
 
-          let [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+          let [activeTab] = await chrome.tabs.query({ active: true, windowId: _sender.tab.windowId }).catch(() => []);
           if (activeTab && activeTab.id !== senderTabId) {
             sendResponse({ success: true, ignored: true });
             break;
