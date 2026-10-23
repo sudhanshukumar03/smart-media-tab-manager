@@ -10,15 +10,15 @@ Activating any tab in a category sends one summary notification listing everythi
 
 ## Two operating modes
 
-### Manual Mode (default)
+### Smart Mode (default)
+
+The extension classifies every tab by URL against three hostname lists. You don't mark anything — just browse normally. Opening Coursera automatically pauses Spotify. Closing it resumes Spotify. Opening Netflix pauses both.
+
+### Manual Mode
 
 You mark one tab as Music and one as Lecture — or one as Movie/TV — using the popup. The extension then watches only those tabs. URL doesn't matter: a tab marked as Music could be anything; switching to it resumes it and pauses the others.
 
 Useful when you want precise control over exactly which tabs count.
-
-### Smart Mode
-
-The extension classifies every tab by URL against three hostname lists. You don't mark anything — just browse normally. Opening Coursera automatically pauses Spotify. Closing it resumes Spotify. Opening Netflix pauses both.
 
 Smart Mode also handles:
 - **Work tabs** — GitHub, Replit, Stack Overflow, etc. are "neutral". By default music keeps playing on neutral tabs. Toggle "Play music on work tabs" off to silence it there too.
@@ -73,7 +73,7 @@ The extension tracks exactly which tabs it muted. It only ever unmutes those tab
 
 ## Fade audio
 
-When fade is enabled, volume ramps over ~500 ms before a pause (down to 0, then `.pause()`) and after a play (`.play()` at volume 0, then ramp back up to 1). The Layer 1 confirmation check waits an extra 300 ms after a faded pause to avoid falsely falling back to Layer 2 mid-fade.
+When fade is enabled, volume ramps over ~500 ms before a pause (down to 0, then `.pause()`) and after a play (`.play()` at volume 0, then ramp back up to the user's previously set volume). The Layer 1 confirmation check waits an extra 300 ms after a faded pause to avoid falsely falling back to Layer 2 mid-fade.
 
 ---
 
@@ -95,10 +95,10 @@ For watch pages, four modes are available:
 
 | Mode | Behavior |
 |---|---|
-| **Ask me** (default) | Popup shows a Music / Lecture / Movie picker for unresolved watch pages. Choice is remembered for future unresolved tabs in the same session. |
+| **Always Lecture** (default) | Every watch page is classified as Lecture automatically. |
 | **Always Music** | Every watch page is classified as Music automatically. |
-| **Always Lecture** | Every watch page is classified as Lecture automatically. |
 | **Always Movie/TV** | Every watch page is classified as Movie/Show automatically. |
+| **Ask me** | Popup shows a Music / Lecture / Movie picker for unresolved watch pages. Choice is remembered for future unresolved tabs in the same session. |
 
 The popup picker is always available as a **per-tab override** regardless of the global setting. If your default is "Always Music" but a specific tab is a lecture, you can reclassify it without changing your global preference.
 

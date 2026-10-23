@@ -846,6 +846,8 @@ async function handleManualSwitch(activeTabId, activeWindowId, state) {
   if (isMusic) {
     // switching to music = user wants to listen, clear the manual-stop flag
     await setState({ userManuallyStopped: false });
+    if (lectureTabId && lectureTabId !== musicTabId) await controlTab(lectureTabId, 'pause', settings.fadeAudio);
+    if (movieTabId && movieTabId !== musicTabId)     await controlTab(movieTabId,   'pause', settings.fadeAudio);
     // Pause any other audible background tab
     const allTabs = await chrome.tabs.query({}).catch(() => []);
     for (const t of allTabs) {
@@ -854,10 +856,10 @@ async function handleManualSwitch(activeTabId, activeWindowId, state) {
       }
     }
     await controlTab(musicTabId,   'play',  settings.fadeAudio);
-    if (lectureTabId && lectureTabId !== musicTabId) await controlTab(lectureTabId, 'pause', settings.fadeAudio);
-    if (movieTabId && movieTabId !== musicTabId)     await controlTab(movieTabId,   'pause', settings.fadeAudio);
     if (settings.notifyOnSwitch) sendNotification('🎵 Music resumed, others paused.');
   } else if (isLecture) {
+    if (musicTabId && musicTabId !== lectureTabId) await controlTab(musicTabId, 'pause', settings.fadeAudio);
+    if (movieTabId && movieTabId !== lectureTabId) await controlTab(movieTabId, 'pause', settings.fadeAudio);
     const allTabs = await chrome.tabs.query({}).catch(() => []);
     for (const t of allTabs) {
       if (t.id !== activeTabId && isTabActuallyPlaying(t, state.extMutedTabIds)) {
@@ -865,10 +867,10 @@ async function handleManualSwitch(activeTabId, activeWindowId, state) {
       }
     }
     await controlTab(lectureTabId, 'play',  settings.fadeAudio);
-    if (musicTabId && musicTabId !== lectureTabId) await controlTab(musicTabId, 'pause', settings.fadeAudio);
-    if (movieTabId && movieTabId !== lectureTabId) await controlTab(movieTabId, 'pause', settings.fadeAudio);
     if (settings.notifyOnSwitch) sendNotification('🎓 Lecture resumed, others paused.');
   } else if (isMovie) {
+    if (musicTabId && musicTabId !== movieTabId)     await controlTab(musicTabId,   'pause', settings.fadeAudio);
+    if (lectureTabId && lectureTabId !== movieTabId) await controlTab(lectureTabId, 'pause', settings.fadeAudio);
     const allTabs = await chrome.tabs.query({}).catch(() => []);
     for (const t of allTabs) {
       if (t.id !== activeTabId && isTabActuallyPlaying(t, state.extMutedTabIds)) {
@@ -876,8 +878,6 @@ async function handleManualSwitch(activeTabId, activeWindowId, state) {
       }
     }
     await controlTab(movieTabId,   'play',  settings.fadeAudio);
-    if (musicTabId && musicTabId !== movieTabId)     await controlTab(musicTabId,   'pause', settings.fadeAudio);
-    if (lectureTabId && lectureTabId !== movieTabId) await controlTab(lectureTabId, 'pause', settings.fadeAudio);
     if (settings.notifyOnSwitch) sendNotification('🎬 Movie/TV resumed, others paused.');
   } else {
     // Switched to a neutral/work tab or another window:
@@ -1012,6 +1012,12 @@ async function switchBetweenPinnedTabs(musicTabId, lectureTabId, settings, sourc
     setExplicitCooldown(musicTabId,   source, 'switchAway');
     setExplicitCooldown(lectureTabId, source, 'switchTo');
     await controlTab(musicTabId,   'pause', settings.fadeAudio);
+    const allTabs = await chrome.tabs.query({}).catch(() => []);
+    for (const t of allTabs) {
+      if (t.id !== lectureTabId && isTabActuallyPlaying(t, state.extMutedTabIds)) {
+        await controlTab(t.id, 'pause', settings.fadeAudio);
+      }
+    }
     await controlTab(lectureTabId, 'play',  settings.fadeAudio);
     try {
       const targetTab = await chrome.tabs.get(lectureTabId);
@@ -1028,6 +1034,12 @@ async function switchBetweenPinnedTabs(musicTabId, lectureTabId, settings, sourc
     setExplicitCooldown(musicTabId,   source, 'switchTo');
     await setState({ userManuallyStopped: false });
     await controlTab(lectureTabId, 'pause', settings.fadeAudio);
+    const allTabs = await chrome.tabs.query({}).catch(() => []);
+    for (const t of allTabs) {
+      if (t.id !== musicTabId && isTabActuallyPlaying(t, state.extMutedTabIds)) {
+        await controlTab(t.id, 'pause', settings.fadeAudio);
+      }
+    }
     await controlTab(musicTabId,   'play',  settings.fadeAudio);
     try {
       const targetTab = await chrome.tabs.get(musicTabId);
@@ -1054,6 +1066,13 @@ async function switchBetweenPinnedTabs(musicTabId, lectureTabId, settings, sourc
 
   if (targetId === musicTabId) {
     await setState({ userManuallyStopped: false });
+  }
+
+  const allTabs = await chrome.tabs.query({}).catch(() => []);
+  for (const t of allTabs) {
+    if (t.id !== targetId && isTabActuallyPlaying(t, state.extMutedTabIds)) {
+      await controlTab(t.id, 'pause', settings.fadeAudio);
+    }
   }
 
   await controlTab(targetId, 'play', settings.fadeAudio);
@@ -1387,6 +1406,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             }
           }
           await setState(updates);
+          const [activeTabM] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+          if (activeTabM && activeTabM.id === message.tabId) {
+            _lastHandledSwitch = { tabId: null, time: 0 };
+            await handleTabSwitch(message.tabId, activeTabM.windowId);
+          } else {
+            await updateBadge(message.tabId, await getState());
+          }
           sendResponse({ success: true });
           break;
         }
@@ -1405,6 +1431,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             }
           }
           await setState(updates);
+          const [activeTabL] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+          if (activeTabL && activeTabL.id === message.tabId) {
+            _lastHandledSwitch = { tabId: null, time: 0 };
+            await handleTabSwitch(message.tabId, activeTabL.windowId);
+          } else {
+            await updateBadge(message.tabId, await getState());
+          }
           sendResponse({ success: true });
           break;
         }
@@ -1423,6 +1456,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             }
           }
           await setState(updates);
+          const [activeTabV] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+          if (activeTabV && activeTabV.id === message.tabId) {
+            _lastHandledSwitch = { tabId: null, time: 0 };
+            await handleTabSwitch(message.tabId, activeTabV.windowId);
+          } else {
+            await updateBadge(message.tabId, await getState());
+          }
           sendResponse({ success: true });
           break;
         }

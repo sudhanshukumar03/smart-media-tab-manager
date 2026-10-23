@@ -270,15 +270,15 @@ async function render(state) {
   lectureRow.classList.remove('active-row');
   movieRow.classList.remove('active-row');
 
-  if (activeId === musicTabId && musicValid) {
+  if ((activeId === musicTabId && musicValid) || (isSmartMode && activeTabRole === 'music')) {
     statusDot.classList.add('music');
     statusText.textContent = 'Music is active';
     musicRow.classList.add('active-row');
-  } else if (activeId === lectureTabId && lectureValid) {
+  } else if ((activeId === lectureTabId && lectureValid) || (isSmartMode && activeTabRole === 'lecture')) {
     statusDot.classList.add('lecture');
     statusText.textContent = 'Lecture is active';
     lectureRow.classList.add('active-row');
-  } else if (activeId === movieTabId && movieValid) {
+  } else if ((activeId === movieTabId && movieValid) || (isSmartMode && activeTabRole === 'movie')) {
     statusDot.classList.add('movie');
     statusText.textContent = 'Movie/TV is active';
     movieRow.classList.add('active-row');

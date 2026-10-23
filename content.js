@@ -89,9 +89,18 @@
     getAllMediaElements().forEach(attachMediaListeners);
   }
 
+  let _scanTimer = null;
+  function scheduleScan() {
+    if (_scanTimer) return;
+    _scanTimer = setTimeout(() => {
+      _scanTimer = null;
+      scanAndAttach();
+    }, 300);
+  }
+
   scanAndAttach();
   // MutationObserver catches players that load after the page shell (most SPAs)
-  new MutationObserver(scanAndAttach).observe(document.documentElement, { childList: true, subtree: true });
+  new MutationObserver(scheduleScan).observe(document.documentElement, { childList: true, subtree: true });
 
   // Remember the element we last acted on so the confirmation check inspects
   // the SAME element we just paused/played, instead of independently calling
@@ -175,6 +184,18 @@
       await fadeVolume(el, el.volume, 0);
     }
 
+    if (action === 'play' && fadeAudio && el) {
+      const targetVolume = el.__smtmUserVolume !== undefined ? el.__smtmUserVolume : (el.volume || 1);
+      try { el.volume = 0; } catch { /* ignore */ }
+      const clicked = trySiteSpecificControl(action);
+      if (clicked) {
+        await fadeVolume(el, 0, targetVolume);
+      } else {
+        try { el.volume = targetVolume; } catch { /* ignore */ }
+      }
+      return clicked;
+    }
+
     const clicked = trySiteSpecificControl(action);
     if (clicked && action === 'pause' && fadeAudio && el) {
       setTimeout(() => {
@@ -182,6 +203,10 @@
           try { el.volume = el.__smtmUserVolume; } catch { /* ignore */ }
         }
       }, 300);
+    } else if (clicked && action === 'play' && !fadeAudio && el) {
+      if (el.__smtmUserVolume !== undefined && el.volume === 0) {
+        try { el.volume = el.__smtmUserVolume; } catch { /* ignore */ }
+      }
     }
     return clicked;
   }
