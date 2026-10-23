@@ -1125,6 +1125,22 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     const timer = setTimeout(async () => {
       _tabUpdateTimers.delete(tabId);
       const state = await getState();
+
+      // If a tracked tab navigated, keep its stored URL updated
+      const urlUpdates = {};
+      if (tabId === state.musicTabId && state.musicUrl !== changeInfo.url) {
+        urlUpdates.musicUrl = changeInfo.url;
+      }
+      if (tabId === state.lectureTabId && state.lectureUrl !== changeInfo.url) {
+        urlUpdates.lectureUrl = changeInfo.url;
+      }
+      if (tabId === state.movieTabId && state.movieUrl !== changeInfo.url) {
+        urlUpdates.movieUrl = changeInfo.url;
+      }
+      if (Object.keys(urlUpdates).length > 0) {
+        await setState(urlUpdates);
+      }
+
       if (!state.settings.smartMode) return;
       if (checkCooldown(tabId, 'tabUpdated')) return;
       try {

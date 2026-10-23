@@ -13,7 +13,7 @@
     'soundcloud.com':      '.playControls__play',
     'music.amazon.com':    '.transport-button-play-pause',
     'tidal.com':           'button[data-test="play"]',
-    'music.youtube.com':   '.play-pause-button',
+    'music.youtube.com':   '#play-pause-button, .play-pause-button',
     'pandora.com':         'button[data-qa="play_pause"]',
     'deezer.com':          'button[aria-label="Play"], button[aria-label="Pause"]',
     // indian platforms — fallback to media element if selector misses
@@ -72,8 +72,21 @@
     });
   }
 
+  function getAllMediaElements(root = document) {
+    const list = Array.from(root.querySelectorAll('video, audio'));
+    try {
+      const allNodes = root.querySelectorAll('*');
+      for (let i = 0; i < allNodes.length; i++) {
+        if (allNodes[i].shadowRoot) {
+          list.push(...getAllMediaElements(allNodes[i].shadowRoot));
+        }
+      }
+    } catch { /* ignore */ }
+    return list;
+  }
+
   function scanAndAttach() {
-    document.querySelectorAll('video, audio').forEach(attachMediaListeners);
+    getAllMediaElements().forEach(attachMediaListeners);
   }
 
   scanAndAttach();
@@ -98,7 +111,7 @@
   }
 
   function findMediaElement() {
-    const all = Array.from(document.querySelectorAll('video, audio'));
+    const all = getAllMediaElements();
     if (all.length === 0) return null;
     if (all.length === 1) return all[0];
     return all.reduce((best, el) => (scoreElement(el) > scoreElement(best) ? el : best), all[0]);
@@ -188,6 +201,13 @@
         await fadeVolume(el, el.volume, 0);
       }
       try { el.pause(); } catch { /* ignore */ }
+      const all = getAllMediaElements();
+      for (const other of all) {
+        if (other !== el && !other.paused) {
+          markExtAction(other);
+          try { other.pause(); } catch { /* ignore */ }
+        }
+      }
       if (fadeAudio) {
         setTimeout(() => {
           if (el.paused) {
