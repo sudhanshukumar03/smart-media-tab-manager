@@ -124,11 +124,22 @@ async function init() {
       try {
         const newState = await saveOptions({ forgetPreferences: true });
         if (prefSummaryEl) prefSummaryEl.textContent = 'No remembered choices yet.';
+        if (lastChoiceNote) {
+          lastChoiceNote.textContent = '';
+          lastChoiceNote.classList.add('hidden');
+        }
         void newState;
       } catch { /* ignore — user can retry */ }
       forgetBtn.disabled = false;
     });
   }
+
+  document.querySelectorAll('a[href^="chrome://"]').forEach(a => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      chrome.tabs.create({ url: a.href });
+    });
+  });
 
   syncSmartSubSettings(settings.smartMode, smartDimmableRows);
   const smartToggle = document.getElementById('smartMode');
@@ -183,6 +194,7 @@ async function init() {
       if (musicListEl)   musicListEl.value   = arrayToTextarea(newState.musicHostnames);
       if (lectureListEl) lectureListEl.value = arrayToTextarea(newState.lectureHostnames);
       if (movieListEl)   movieListEl.value   = arrayToTextarea(newState.movieHostnames);
+      state = newState;
 
       saveStatus.textContent = 'Saved!';
       saveStatus.classList.remove('hidden');

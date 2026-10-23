@@ -271,20 +271,28 @@ function classifyUrl(url, config = {}) {
     const u        = new URL(url);
     const hostname = u.hostname.replace(/^www\./, '');
 
+    const isYoutubeHost = hostname === 'youtube.com' || hostname === 'm.youtube.com' || hostname === 'youtu.be';
+    const isWatchPath =
+      hostname === 'youtu.be' ||                      // youtu.be/<id> is always a "watch"
+      u.pathname.startsWith('/watch') ||
+      u.pathname.startsWith('/live/');
+
+    // 1. Exact hostname match across all categories
     for (const category of CATEGORIES) {
       const list = hostnamesByCategory[category] || CATEGORY_DEFAULT_HOSTNAMES[category];
       if (list.includes(hostname)) return category;
     }
 
-    // YouTube watch pages: ambiguous — could be music, a lecture, or a movie/long-form
-    // video. music.youtube.com is already matched above via the music list.
-    // youtube.com/shorts, /channel, /playlist → neutral (browsing, not watching).
-    // m.youtube.com (mobile web) and youtu.be (short links) are treated the same
-    // as youtube.com so the ambiguity logic below applies to them too.
-    const isYoutubeHost = hostname === 'youtube.com' || hostname === 'm.youtube.com' || hostname === 'youtu.be';
-    const isWatchPath =
-      hostname === 'youtu.be' ||                      // youtu.be/<id> is always a "watch"
-      u.pathname.startsWith('/watch');
+    // 2. Subdomain/domain suffix matching (e.g. user entered "spotify.com", matches "open.spotify.com")
+    // Skip youtube.com/youtu.be here so watch/live paths and music.youtube.com aren't swallowed
+    if (!isYoutubeHost) {
+      for (const category of CATEGORIES) {
+        const list = hostnamesByCategory[category] || CATEGORY_DEFAULT_HOSTNAMES[category];
+        if (list.some((d) => d && d.includes('.') && (hostname === d || hostname.endsWith('.' + d)))) {
+          return category;
+        }
+      }
+    }
 
     if (isYoutubeHost && isWatchPath) {
       const mode = config.youtubeMode || 'ask';
@@ -420,12 +428,24 @@ function classifyConfig(state) {
 // explicitly marked (via popup or Smart Mode auto-pin) is always treated
 // as that category regardless of what URL it currently shows — important
 // for two-YouTube-tabs cases and for tabs that navigate mid-session.
-// Falls back to classifyUrl when the tab isn't pinned to any category.
 function classifyTabForSwitch(tabId, url, state) {
+  const urlClass = classifyUrl(url, classifyConfig(state));
+  if (state.settings && state.settings.smartMode) {
+    // In Smart Mode, if a tab has navigated to a neutral or different category site,
+    // reclassify by URL rather than forcing the old auto-pinned role.
+    // Pinned IDs retain priority if the URL still matches that category or if it's
+    // an ambiguous YouTube watch/live page where the user previously declared the role.
+    const isYt = url && (url.includes('youtube.com') || url.includes('youtu.be'));
+    if (tabId === state.musicTabId && (urlClass === 'music' || isYt)) return 'music';
+    if (tabId === state.lectureTabId && (urlClass === 'lecture' || isYt)) return 'lecture';
+    if (tabId === state.movieTabId && (urlClass === 'movie' || isYt)) return 'movie';
+    return urlClass;
+  }
+  // Manual Mode: pinned tab IDs take precedence
   if (tabId === state.musicTabId)   return 'music';
   if (tabId === state.lectureTabId) return 'lecture';
   if (tabId === state.movieTabId)   return 'movie';
-  return classifyUrl(url, classifyConfig(state));
+  return urlClass;
 }
 
 // send to content script — inject it first if missing, return null if tab is unreachable
@@ -556,7 +576,7 @@ async function updateBadge(activeTabId, state) {
     if (activeTabId) {
       try {
         const tab = await chrome.tabs.get(activeTabId);
-        role = classifyUrl(tab.url, classifyConfig(state));
+        role = classifyTabForSwitch(activeTabId, tab.url, state);
       } catch { /* tab gone */ }
     }
     if (role === 'music')        { text = 'M'; color = '#1DB954'; }
@@ -572,6 +592,7 @@ async function updateBadge(activeTabId, state) {
   } else {
     if (activeTabId === musicTabId)        { text = 'M'; color = '#1DB954'; }
     else if (activeTabId === lectureTabId) { text = 'L'; color = '#4285F4'; }
+    else if (activeTabId === movieTabId)   { text = 'V'; color = '#E50914'; }
   }
 
   try {
@@ -727,6 +748,9 @@ async function askUserToChooseSource(category, candidate, existing, fadeAudio) {
   // 15s auto-timeout: if the user never responds, default safely to keeping
   // whatever was already playing (never leave a conflict prompt open forever).
   clearConflictTimer(category);
+  try {
+    chrome.alarms.create(`conflict_timeout_${category}`, { delayInMinutes: 0.25 });
+  } catch { /* fallback to setTimeout below */ }
   const timeoutId = setTimeout(async () => {
     _conflictTimeoutTimers.delete(category);
     const fresh = await getState();
@@ -744,6 +768,9 @@ function clearConflictTimer(category) {
     clearTimeout(timeoutId);
     _conflictTimeoutTimers.delete(category);
   }
+  try {
+    chrome.alarms.clear(`conflict_timeout_${category}`);
+  } catch { /* ignore */ }
 }
 
 // choice: 'candidate' (the newly opened tab) or 'existing' (what was already playing)
@@ -774,6 +801,8 @@ async function settleConflict(entry, choice) {
     if (fresh.settings.notifyOnSwitch) {
       sendNotification(`${CATEGORY_EMOJI[category]} Kept ${labelFor(existing.hostname)} playing — ${labelFor(candidate.hostname)} paused.`);
     }
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
+    await updateBadge(activeTab ? activeTab.id : null, fresh);
   }
 }
 
@@ -793,46 +822,60 @@ chrome.notifications.onClosed.addListener(async (notificationId) => {
     clearConflictTimer(category);
     delete pendingConflicts[category];
     await setState({ pendingConflicts });
+    const fresh = await getState();
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
+    await updateBadge(activeTab ? activeTab.id : null, fresh);
+  }
+});
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm && alarm.name && alarm.name.startsWith('conflict_timeout_')) {
+    const category = alarm.name.replace('conflict_timeout_', '');
+    const state = await getState();
+    const entry = (state.pendingConflicts || {})[category];
+    if (entry) {
+      await settleConflict(entry, 'existing');
+      try { chrome.notifications.clear(entry.notificationId); } catch { /* ignore */ }
+    }
   }
 });
 
 async function handleManualSwitch(activeTabId, activeWindowId, state) {
-  const { musicTabId, lectureTabId, settings } = state;
-  if (!musicTabId && !lectureTabId) return;
+  const { musicTabId, lectureTabId, movieTabId, settings } = state;
+  if (!musicTabId && !lectureTabId && !movieTabId) return;
 
   const isMusic   = activeTabId === musicTabId;
   const isLecture = activeTabId === lectureTabId;
-
-  if (!isMusic && !isLecture) {
-    let markedInWindow = false;
-    for (const tabId of [musicTabId, lectureTabId]) {
-      if (!tabId) continue;
-      try {
-        const tab = await chrome.tabs.get(tabId);
-        if (tab && tab.windowId === activeWindowId) { markedInWindow = true; break; }
-      } catch { /* tab gone */ }
-    }
-    if (!markedInWindow) return;
-
-    if (settings.pauseBothWhenElsewhere) {
-      await controlTab(musicTabId,   'pause', settings.fadeAudio);
-      await controlTab(lectureTabId, 'pause', settings.fadeAudio);
-      if (settings.notifyOnSwitch) sendNotification('Both tabs paused.');
-    }
-    await updateBadge(activeTabId, state);
-    return;
-  }
+  const isMovie   = activeTabId === movieTabId;
 
   if (isMusic) {
     // switching to music = user wants to listen, clear the manual-stop flag
     await setState({ userManuallyStopped: false });
     await controlTab(musicTabId,   'play',  settings.fadeAudio);
-    await controlTab(lectureTabId, 'pause', settings.fadeAudio);
-    if (settings.notifyOnSwitch) sendNotification('Music resumed, lecture paused.');
-  } else {
+    if (lectureTabId) await controlTab(lectureTabId, 'pause', settings.fadeAudio);
+    if (movieTabId)   await controlTab(movieTabId,   'pause', settings.fadeAudio);
+    if (settings.notifyOnSwitch) sendNotification('🎵 Music resumed, others paused.');
+  } else if (isLecture) {
     await controlTab(lectureTabId, 'play',  settings.fadeAudio);
-    await controlTab(musicTabId,   'pause', settings.fadeAudio);
-    if (settings.notifyOnSwitch) sendNotification('Lecture resumed, music paused.');
+    if (musicTabId) await controlTab(musicTabId, 'pause', settings.fadeAudio);
+    if (movieTabId) await controlTab(movieTabId, 'pause', settings.fadeAudio);
+    if (settings.notifyOnSwitch) sendNotification('🎓 Lecture resumed, others paused.');
+  } else if (isMovie) {
+    await controlTab(movieTabId,   'play',  settings.fadeAudio);
+    if (musicTabId)   await controlTab(musicTabId,   'pause', settings.fadeAudio);
+    if (lectureTabId) await controlTab(lectureTabId, 'pause', settings.fadeAudio);
+    if (settings.notifyOnSwitch) sendNotification('🎬 Movie/TV resumed, others paused.');
+  } else {
+    // Switched to a neutral/work tab or another window:
+    // CORE RULE: Lectures and Movies must NEVER play in the background!
+    if (lectureTabId) await controlTab(lectureTabId, 'pause', settings.fadeAudio);
+    if (movieTabId)   await controlTab(movieTabId,   'pause', settings.fadeAudio);
+
+    // Music can continue playing in the background unless pauseBothWhenElsewhere is turned on
+    if (settings.pauseBothWhenElsewhere && musicTabId) {
+      await controlTab(musicTabId, 'pause', settings.fadeAudio);
+      if (settings.notifyOnSwitch) sendNotification('All media paused.');
+    }
   }
 
   await updateBadge(activeTabId, await getState());
@@ -841,7 +884,6 @@ async function handleManualSwitch(activeTabId, activeWindowId, state) {
 // smart mode core: routes activation through the MediaManager (activateCategoryTab /
 // resolveCategoryActivation) so multiple tabs of the same category never both play,
 // and activating any one of music/lecture/movie pauses the other two categories.
-// Manual ID markings win over URL classification (handles two YouTube tabs case).
 async function handleSmartSwitch(activeTabId, activeWindowId, state) {
   let tab;
   try { tab = await chrome.tabs.get(activeTabId); } catch { return; }
@@ -853,24 +895,16 @@ async function handleSmartSwitch(activeTabId, activeWindowId, state) {
     const hostname = hostnameOf(tab.url);
     await resolveCategoryActivation(role, activeTabId, tab.url, hostname, state, settings.fadeAudio);
   } else {
-    // neutral/work tab (Replit, GitHub, etc.) — lecture never plays unattended,
-    // so sweep for any lecture tab still audible in the background and pause it.
+    // Neutral/work tab (GitHub, docs, etc.)
+    // CORE RULE: Lectures and Movies must NEVER play in the background unattended!
     await pauseCategory('lecture', null, settings.fadeAudio);
+    await pauseCategory('movie', null, settings.fadeAudio);
 
     if (settings.playMusicOnWorkTabs && state.musicTabId && !state.userManuallyStopped) {
       await controlTab(state.musicTabId, 'play', settings.fadeAudio);
-    } else if (!settings.playMusicOnWorkTabs && settings.pauseBothWhenElsewhere) {
-      let markedInWindow = false;
-      for (const tabId of [state.musicTabId, state.lectureTabId, state.movieTabId]) {
-        if (!tabId) continue;
-        try {
-          const t = await chrome.tabs.get(tabId);
-          if (t.windowId === activeWindowId) { markedInWindow = true; break; }
-        } catch { /* tab gone */ }
-      }
-      if (markedInWindow) {
-        await controlTab(state.musicTabId,   'pause', settings.fadeAudio);
-        await controlTab(state.lectureTabId, 'pause', settings.fadeAudio);
+    } else if (!settings.playMusicOnWorkTabs || settings.pauseBothWhenElsewhere) {
+      if (state.musicTabId) {
+        await controlTab(state.musicTabId, 'pause', settings.fadeAudio);
       }
     }
   }
@@ -878,7 +912,7 @@ async function handleSmartSwitch(activeTabId, activeWindowId, state) {
   await updateBadge(activeTabId, await getState());
 }
 
-// fires when Brave loses focus entirely (Alt+Tab, minimise, lock screen)
+// fires when browser loses focus entirely (Alt+Tab, minimise, lock screen)
 async function handleAppBlur() {
   const state = await getState();
   if (!state.settings.smartMode || !state.settings.playMusicOnAppSwitch) return;
@@ -888,9 +922,10 @@ async function handleAppBlur() {
 
   await controlTab(state.musicTabId, 'play', state.settings.fadeAudio);
   await pauseCategory('lecture', state.musicTabId, state.settings.fadeAudio);
+  await pauseCategory('movie', state.musicTabId, state.settings.fadeAudio);
 
   if (state.settings.notifyOnSwitch) {
-    sendNotification('Brave is in the background — music is playing.');
+    sendNotification('Browser is in the background — music is playing.');
   }
 }
 
@@ -901,13 +936,23 @@ async function switchBetweenPinnedTabs(musicTabId, lectureTabId, settings, sourc
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!activeTab) return;
 
+  const state = await getState();
+  if (state.movieTabId) {
+    await controlTab(state.movieTabId, 'pause', settings.fadeAudio);
+  }
+
   if (activeTab.id === musicTabId) {
     if (!lectureTabId) return;
     setExplicitCooldown(musicTabId,   source, 'switchAway');
     setExplicitCooldown(lectureTabId, source, 'switchTo');
     await controlTab(lectureTabId, 'play',  settings.fadeAudio);
     await controlTab(musicTabId,   'pause', settings.fadeAudio);
-    await chrome.tabs.update(lectureTabId, { active: true });
+    try {
+      const targetTab = await chrome.tabs.get(lectureTabId);
+      await chrome.tabs.update(lectureTabId, { active: true });
+      if (targetTab && targetTab.windowId) await chrome.windows.update(targetTab.windowId, { focused: true });
+    } catch { /* ignore */ }
+    await updateBadge(lectureTabId, await getState());
     return;
   }
 
@@ -915,16 +960,20 @@ async function switchBetweenPinnedTabs(musicTabId, lectureTabId, settings, sourc
     if (!musicTabId) return;
     setExplicitCooldown(lectureTabId, source, 'switchAway');
     setExplicitCooldown(musicTabId,   source, 'switchTo');
+    await setState({ userManuallyStopped: false });
     await controlTab(musicTabId,   'play',  settings.fadeAudio);
     await controlTab(lectureTabId, 'pause', settings.fadeAudio);
-    await chrome.tabs.update(musicTabId, { active: true });
+    try {
+      const targetTab = await chrome.tabs.get(musicTabId);
+      await chrome.tabs.update(musicTabId, { active: true });
+      if (targetTab && targetTab.windowId) await chrome.windows.update(targetTab.windowId, { focused: true });
+    } catch { /* ignore */ }
+    await updateBadge(musicTabId, await getState());
     return;
   }
 
   // Neither pinned tab is active — jump to whichever one is pinned (lecture
-  // takes priority) and make sure the OTHER pinned tab is paused, since no
-  // onActivated/onFocusChanged auto-trigger will fix this up: we've just set
-  // an explicit cooldown on the target tab, which would suppress it anyway.
+  // takes priority) and make sure the OTHER pinned tab is paused.
   const targetId = lectureTabId || musicTabId;
   if (!targetId) return;
 
@@ -936,8 +985,18 @@ async function switchBetweenPinnedTabs(musicTabId, lectureTabId, settings, sourc
     setExplicitCooldown(lectureTabId, source, 'switchAway');
     await controlTab(lectureTabId, 'pause', settings.fadeAudio);
   }
+
+  if (targetId === musicTabId) {
+    await setState({ userManuallyStopped: false });
+  }
+
   await controlTab(targetId, 'play', settings.fadeAudio);
-  await chrome.tabs.update(targetId, { active: true });
+  try {
+    const targetTab = await chrome.tabs.get(targetId);
+    await chrome.tabs.update(targetId, { active: true });
+    if (targetTab && targetTab.windowId) await chrome.windows.update(targetTab.windowId, { focused: true });
+  } catch { /* ignore */ }
+  await updateBadge(targetId, await getState());
 }
 
 async function handleTabSwitch(activeTabId, activeWindowId) {
@@ -1022,19 +1081,72 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     (async () => {
       try {
         const state = await getState();
-        // Manual Mode never uses URL-based conflict detection.
-        if (!state.settings.smartMode) return;
         if (checkCooldown(tabId, 'tabAudible')) return;
 
-        // changeInfo doesn't carry tab.url — fetch the live object for URL/hostname.
         let liveTab;
         try { liveTab = await chrome.tabs.get(tabId); } catch { return; }
 
-        const role = classifyTabForSwitch(tabId, liveTab.url, state);
-        if (!CATEGORIES.includes(role)) return; // neutral tab became audible — ignore
+        let activeTab = null;
+        try {
+          const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+          activeTab = tab;
+        } catch { /* ignore */ }
 
-        const hostname = hostnameOf(liveTab.url);
-        await resolveCategoryActivation(role, tabId, liveTab.url, hostname, state, state.settings.fadeAudio);
+        const isActive = activeTab && activeTab.id === tabId;
+
+        if (state.settings.smartMode) {
+          const role = classifyTabForSwitch(tabId, liveTab.url, state);
+          if (!CATEGORIES.includes(role)) return; // neutral tab became audible — ignore
+
+          if (!isActive) {
+            // Tab is in the background!
+            if (role === 'lecture' || role === 'movie') {
+              // Strict rule: Lectures and Movies must NEVER play in the background unattended.
+              await controlTab(tabId, 'pause', state.settings.fadeAudio);
+              return;
+            } else if (role === 'music') {
+              // Background music started:
+              // If user is currently focused on an active lecture or movie tab, background music must NOT play over it!
+              const activeRole = activeTab ? classifyTabForSwitch(activeTab.id, activeTab.url, state) : 'neutral';
+              if (activeRole === 'lecture' || activeRole === 'movie') {
+                await controlTab(tabId, 'pause', state.settings.fadeAudio);
+                return;
+              }
+              const hostname = hostnameOf(liveTab.url);
+              await resolveCategoryActivation(role, tabId, liveTab.url, hostname, state, state.settings.fadeAudio);
+            }
+          } else {
+            // Active tab became audible
+            const hostname = hostnameOf(liveTab.url);
+            await resolveCategoryActivation(role, tabId, liveTab.url, hostname, state, state.settings.fadeAudio);
+          }
+        } else {
+          // Manual Mode
+          const { musicTabId, lectureTabId, movieTabId, settings } = state;
+          if (!isActive) {
+            if (tabId === lectureTabId || tabId === movieTabId) {
+              await controlTab(tabId, 'pause', settings.fadeAudio);
+              return;
+            } else if (tabId === musicTabId) {
+              if (activeTab && (activeTab.id === lectureTabId || activeTab.id === movieTabId)) {
+                await controlTab(tabId, 'pause', settings.fadeAudio);
+                return;
+              }
+            }
+          } else {
+            // Active manual tab became audible — ensure others are paused
+            if (tabId === musicTabId) {
+              if (lectureTabId) await controlTab(lectureTabId, 'pause', settings.fadeAudio);
+              if (movieTabId)   await controlTab(movieTabId,   'pause', settings.fadeAudio);
+            } else if (tabId === lectureTabId) {
+              if (musicTabId) await controlTab(musicTabId, 'pause', settings.fadeAudio);
+              if (movieTabId) await controlTab(movieTabId, 'pause', settings.fadeAudio);
+            } else if (tabId === movieTabId) {
+              if (musicTabId)   await controlTab(musicTabId,   'pause', settings.fadeAudio);
+              if (lectureTabId) await controlTab(lectureTabId, 'pause', settings.fadeAudio);
+            }
+          }
+        }
       } catch { /* ignore — tab may have closed between event and handler */ }
     })();
   }
@@ -1096,11 +1208,26 @@ chrome.commands.onCommand.addListener(async (command) => {
   } catch { /* tab gone */ }
 });
 
+function extractHostname(input) {
+  if (!input) return null;
+  let str = String(input).trim().toLowerCase();
+  if (!str) return null;
+  try {
+    if (!str.includes('://')) {
+      str = 'https://' + str;
+    }
+    const u = new URL(str);
+    return u.hostname.replace(/^www\./, '');
+  } catch {
+    return str.replace(/^[a-z]+:\/\//, '').split('/')[0].replace(/^www\./, '');
+  }
+}
+
 function sanitizeHostnameList(list) {
   if (!Array.isArray(list)) return null;
   const cleaned = list
-    .map((h) => String(h || '').trim().toLowerCase().replace(/^www\./, ''))
-    .filter((h) => h.length > 0);
+    .map(extractHostname)
+    .filter((h) => h && h.length > 0);
   return Array.from(new Set(cleaned));
 }
 
@@ -1120,14 +1247,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           await setState({ movieTabId: message.tabId, movieUrl: message.url });
           sendResponse({ success: true });
           break;
-        case 'clearBoth':
+        case 'clearBoth': {
+          const sClear = await getState();
+          for (const mutedId of (sClear.extMutedTabIds || [])) {
+            try { await chrome.tabs.update(mutedId, { muted: false }); } catch { /* tab gone */ }
+          }
           await setState({
             musicTabId: null, lectureTabId: null, movieTabId: null,
             musicUrl: null,   lectureUrl: null,   movieUrl: null,
+            extMutedTabIds: [],
           });
           try { chrome.action.setBadgeText({ text: '' }); } catch { /* ignore */ }
           sendResponse({ success: true });
           break;
+        }
         case 'getState': {
           const fullState = await getState();
           sendResponse({
@@ -1162,6 +1295,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             updates.settings = { ...sYt.settings, youtubeLastChoice: role };
           }
           await setState(updates);
+          const hostname = hostnameOf(message.url) || 'youtube.com';
+          await resolveCategoryActivation(role, message.tabId, message.url, hostname, await getState(), sYt.settings.fadeAudio);
           sendResponse({ success: true });
           break;
         }
@@ -1184,20 +1319,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const cleanedMusic   = sanitizeHostnameList(message.musicHostnames);
           const cleanedLecture = sanitizeHostnameList(message.lectureHostnames);
           const cleanedMovie   = sanitizeHostnameList(message.movieHostnames);
-          // Only overwrite the stored list when the user actually supplied at
-          // least one hostname — an empty textarea submit should NOT silently
-          // wipe the list down to nothing; use the Options "reset" action for that.
-          if (cleanedMusic && cleanedMusic.length > 0)     patch.musicHostnames   = cleanedMusic;
-          if (cleanedLecture && cleanedLecture.length > 0) patch.lectureHostnames = cleanedLecture;
-          if (cleanedMovie && cleanedMovie.length > 0)     patch.movieHostnames   = cleanedMovie;
+          if (cleanedMusic !== null)   patch.musicHostnames   = cleanedMusic;
+          if (cleanedLecture !== null) patch.lectureHostnames = cleanedLecture;
+          if (cleanedMovie !== null)   patch.movieHostnames   = cleanedMovie;
           if (message.forgetPreferences) {
             patch.settings = {
               ...(patch.settings || current.settings),
               categoryPreference: { music: null, lecture: null, movie: null },
+              youtubeLastChoice: null,
             };
           }
           await setState(patch);
-          sendResponse({ success: true, state: await getState() });
+          const updated = await getState();
+          sendResponse({
+            success: true,
+            state: {
+              ...updated,
+              defaultMusicHostnames:   DEFAULT_MUSIC_HOSTNAMES,
+              defaultLectureHostnames: DEFAULT_LECTURE_HOSTNAMES,
+              defaultMovieHostnames:   DEFAULT_MOVIE_HOSTNAMES,
+            },
+          });
           break;
         }
         // only care about manual pauses on music tabs — pausing a lecture shouldn't block auto-resume

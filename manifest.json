@@ -4,7 +4,7 @@
   "version": "1.4.0",
   "description": "Automatically manage music, lecture, and movie/show tabs — never let two music sources (or two lectures, or two shows) play at once, and resume the right one when you switch back.",
   "minimum_chrome_version": "116",
-  "permissions": ["tabs", "storage", "scripting", "activeTab", "notifications", "windows"],
+  "permissions": ["tabs", "storage", "scripting", "activeTab", "notifications", "alarms"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js",

@@ -86,7 +86,7 @@ function isYoutubeWatchUrl(url) {
     const u = new URL(url);
     const h = u.hostname.replace(/^www\./, '');
     if (h === 'youtu.be') return true;  // all youtu.be paths are watch links
-    return (h === 'youtube.com' || h === 'm.youtube.com') && u.pathname.startsWith('/watch');
+    return (h === 'youtube.com' || h === 'm.youtube.com') && (u.pathname.startsWith('/watch') || u.pathname.startsWith('/live/'));
   } catch { return false; }
 }
 
@@ -283,7 +283,7 @@ async function render(state) {
     statusText.textContent = 'Movie/TV is active';
     movieRow.classList.add('active-row');
   } else if (isSmartMode && (musicTabId || lectureTabId || movieTabId)) {
-    if (activeTabRole === 'neutral' && settings && settings.playMusicOnWorkTabs && musicTabId) {
+    if (activeTabRole === 'neutral' && settings && settings.playMusicOnWorkTabs && musicTabId && !state.userManuallyStopped) {
       statusDot.classList.add('music');
       statusText.textContent = 'Music playing \u00b7 work tab';
     } else {
@@ -291,7 +291,7 @@ async function render(state) {
       statusText.textContent = 'Smart Mode watching\u2026';
     }
   } else {
-    statusText.textContent = 'Neither tab is active';
+    statusText.textContent = 'No media tab is active';
   }
 }
 
@@ -375,5 +375,11 @@ async function resolveYoutubeAmbiguity(role) {
 ytChoiceMusicBtn.addEventListener('click',   () => resolveYoutubeAmbiguity('music'));
 ytChoiceLectureBtn.addEventListener('click', () => resolveYoutubeAmbiguity('lecture'));
 ytChoiceMovieBtn.addEventListener('click',   () => resolveYoutubeAmbiguity('movie'));
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === 'local') {
+    loadAndRender();
+  }
+});
 
 loadAndRender();

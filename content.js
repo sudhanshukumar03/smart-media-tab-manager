@@ -105,13 +105,18 @@
 
   function fadeVolume(el, from, to, ms = 500) {
     return new Promise(resolve => {
+      if (el.__fadeInterval) clearInterval(el.__fadeInterval);
       const steps = 20;
       const delta = (to - from) / steps;
       let step = 0;
-      const iv = setInterval(() => {
+      el.__fadeInterval = setInterval(() => {
         step++;
         el.volume = Math.max(0, Math.min(1, from + delta * step));
-        if (step >= steps) { clearInterval(iv); resolve(); }
+        if (step >= steps) {
+          clearInterval(el.__fadeInterval);
+          el.__fadeInterval = null;
+          resolve();
+        }
       }, ms / steps);
     });
   }
@@ -125,8 +130,14 @@
       const btn = document.querySelector(sel);
       if (!btn) continue;
 
+      const aria = (btn.getAttribute('aria-label') || '').trim().toLowerCase();
+      const title = (btn.getAttribute('title') || '').trim().toLowerCase();
+      const tooltip = (btn.getAttribute('data-title-no-tooltip') || '').trim().toLowerCase();
+
       const isPlaying =
-        btn.getAttribute('aria-label') === 'Pause' ||
+        aria.startsWith('pause') ||
+        title.startsWith('pause') ||
+        tooltip === 'pause' ||
         btn.classList.contains('playing') ||
         btn.dataset.state === 'playing';
 
@@ -139,21 +150,25 @@
   async function actOnMediaElement(el, action, fadeAudio) {
     markExtAction(el);
     _lastActedElement = el;
+
+    // Preserve the user's actual volume level instead of blasting at 1.0 (100%)
+    if (el.volume > 0) {
+      el.__smtmUserVolume = el.volume;
+    }
+    const targetVolume = el.__smtmUserVolume !== undefined ? el.__smtmUserVolume : (el.volume || 1);
+
     if (action === 'pause') {
-      if (fadeAudio) {
-        // Fade the audible volume down first so the pause doesn't sound like
-        // an abrupt cut, THEN pause. This genuinely takes ~500ms — callers
-        // must account for that when deciding how long to wait before
-        // checking confirmation (see CONFIRM_DELAY_FADE_MS above).
+      if (fadeAudio && el.volume > 0) {
         await fadeVolume(el, el.volume, 0);
       }
       el.pause();
-      if (fadeAudio) el.volume = 1; // restore for next play
+      // Restore user's actual volume setting for next play
+      if (fadeAudio) el.volume = targetVolume;
     } else {
       if (fadeAudio) {
         el.volume = 0;
         el.play().catch(() => {});
-        await fadeVolume(el, 0, 1);
+        await fadeVolume(el, 0, targetVolume);
       } else {
         el.play().catch(() => {});
       }
@@ -192,24 +207,25 @@
       return;
     }
 
-    const siteHandled = trySiteSpecificControl(action);
-    if (siteHandled) {
-      _lastActedElement = findMediaElement();
-    } else {
-      runAction(action, !!fadeAudio);
-    }
+    (async () => {
+      try {
+        const siteHandled = trySiteSpecificControl(action);
+        if (siteHandled) {
+          _lastActedElement = findMediaElement();
+          const confirmDelay = (action === 'pause' && fadeAudio) ? CONFIRM_DELAY_FADE_MS : CONFIRM_DELAY_MS;
+          await new Promise(r => setTimeout(r, confirmDelay));
+        } else {
+          await runAction(action, !!fadeAudio);
+        }
 
-    // wait a beat then check if the media element is actually in the right
-    // state — background.js uses this to decide whether Layer 2 mute is
-    // needed. A faded pause needs longer before it settles into el.paused.
-    const confirmDelay = (action === 'pause' && fadeAudio) ? CONFIRM_DELAY_FADE_MS : CONFIRM_DELAY_MS;
-
-    setTimeout(() => {
-      const el = _lastActedElement || findMediaElement();
-      let confirmed = null;
-      if (el) confirmed = action === 'pause' ? el.paused === true : el.paused === false;
-      sendResponse({ handled: true, confirmed });
-    }, confirmDelay);
+        const el = _lastActedElement || findMediaElement();
+        let confirmed = null;
+        if (el) confirmed = action === 'pause' ? el.paused === true : el.paused === false;
+        sendResponse({ handled: true, confirmed });
+      } catch (_err) {
+        sendResponse({ handled: false, confirmed: null });
+      }
+    })();
 
     return true; // keep channel open for the async sendResponse
   });
