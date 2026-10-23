@@ -980,9 +980,15 @@ async function handleAppBlur() {
   if (!musicTabId) return;
   if (checkCooldown(musicTabId, 'appBlur')) return;
 
-  await controlTab(musicTabId, 'play', state.settings.fadeAudio);
   await pauseCategory('lecture', musicTabId, state.settings.fadeAudio);
   await pauseCategory('movie', musicTabId, state.settings.fadeAudio);
+  const allTabs = await chrome.tabs.query({}).catch(() => []);
+  for (const t of allTabs) {
+    if (t.id !== musicTabId && isTabActuallyPlaying(t, state.extMutedTabIds)) {
+      await controlTab(t.id, 'pause', state.settings.fadeAudio);
+    }
+  }
+  await controlTab(musicTabId, 'play', state.settings.fadeAudio);
 
   if (state.settings.notifyOnSwitch) {
     sendNotification('Browser is in the background — music is playing.');
@@ -1005,8 +1011,8 @@ async function switchBetweenPinnedTabs(musicTabId, lectureTabId, settings, sourc
     if (!lectureTabId) return;
     setExplicitCooldown(musicTabId,   source, 'switchAway');
     setExplicitCooldown(lectureTabId, source, 'switchTo');
-    await controlTab(lectureTabId, 'play',  settings.fadeAudio);
     await controlTab(musicTabId,   'pause', settings.fadeAudio);
+    await controlTab(lectureTabId, 'play',  settings.fadeAudio);
     try {
       const targetTab = await chrome.tabs.get(lectureTabId);
       await chrome.tabs.update(lectureTabId, { active: true });
@@ -1021,8 +1027,8 @@ async function switchBetweenPinnedTabs(musicTabId, lectureTabId, settings, sourc
     setExplicitCooldown(lectureTabId, source, 'switchAway');
     setExplicitCooldown(musicTabId,   source, 'switchTo');
     await setState({ userManuallyStopped: false });
-    await controlTab(musicTabId,   'play',  settings.fadeAudio);
     await controlTab(lectureTabId, 'pause', settings.fadeAudio);
+    await controlTab(musicTabId,   'play',  settings.fadeAudio);
     try {
       const targetTab = await chrome.tabs.get(musicTabId);
       await chrome.tabs.update(musicTabId, { active: true });
@@ -1457,12 +1463,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           if (message.settings && typeof message.settings === 'object') {
             patch.settings = { ...current.settings, ...message.settings };
           }
-          const cleanedMusic   = sanitizeHostnameList(message.musicHostnames);
-          const cleanedLecture = sanitizeHostnameList(message.lectureHostnames);
-          const cleanedMovie   = sanitizeHostnameList(message.movieHostnames);
-          if (cleanedMusic !== null)   patch.musicHostnames   = cleanedMusic;
-          if (cleanedLecture !== null) patch.lectureHostnames = cleanedLecture;
-          if (cleanedMovie !== null)   patch.movieHostnames   = cleanedMovie;
+          let cleanedMusic   = sanitizeHostnameList(message.musicHostnames);
+          let cleanedLecture = sanitizeHostnameList(message.lectureHostnames);
+          let cleanedMovie   = sanitizeHostnameList(message.movieHostnames);
+
+          if (cleanedMusic !== null) {
+            const musicSet = new Set(cleanedMusic);
+            if (cleanedLecture !== null) cleanedLecture = cleanedLecture.filter((h) => !musicSet.has(h));
+            if (cleanedMovie !== null)   cleanedMovie   = cleanedMovie.filter((h) => !musicSet.has(h));
+            patch.musicHostnames = cleanedMusic;
+          }
+          if (cleanedLecture !== null) {
+            const lectureSet = new Set(cleanedLecture);
+            if (cleanedMovie !== null) cleanedMovie = cleanedMovie.filter((h) => !lectureSet.has(h));
+            patch.lectureHostnames = cleanedLecture;
+          }
+          if (cleanedMovie !== null) {
+            patch.movieHostnames = cleanedMovie;
+          }
           if (message.forgetPreferences) {
             patch.settings = {
               ...(patch.settings || current.settings),
