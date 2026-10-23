@@ -53,7 +53,7 @@ Key examples:
 - **`_explicitCooldown` map** — entries are deleted in `chrome.tabs.onRemoved`. Long-lived sessions with many tab open/close cycles won't accumulate stale entries.
 - **`_tabUpdateTimers` map** — debounce timers are cleared in `chrome.tabs.onRemoved`, preventing a timer from firing after its tab is gone and attempting a `chrome.tabs.get` on a dead tab ID.
 - **`_lastHandledSwitch`** — reset in `chrome.tabs.onRemoved` when the removed tab matches.
-- **`content.js` MutationObserver** — does not disconnect on SPA navigation. For very long-lived tabs the observer accumulates across in-page navigations, but reconnecting it would require detecting SPA navigation from within the content script (fragile). Left as a future improvement candidate; no behaviour change made.
+- **`content.js` MutationObserver** — throttled via a 300ms debounce timer (`scheduleScan`). Streaming SPAs like YouTube and Spotify continuously update their DOM trees (live chat, comments, playback progress). Throttling prevents redundant media scans and keeps CPU usage minimal.
 
 ---
 
@@ -65,7 +65,12 @@ No code change needed.
 
 ---
 
+## 8. Single-pass Shadow DOM media traversal
+
+**What changed:** `getAllMediaElements` recursively inspects open Shadow DOM roots in a single pass. When pausing a tab, all active media elements across custom web components are cleanly paused without requiring redundant polling or multiple injections.
+
+---
+
 ## What was not changed
 
 - **`chrome.storage.sync`** — cross-device sync was out of scope.
-- **MutationObserver reconnection in `content.js`** — would alter observable behaviour on SPA navigation; left as a future suggestion only.
