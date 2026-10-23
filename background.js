@@ -1241,6 +1241,35 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       } catch { /* ignore — tab may have closed between event and handler */ }
     })();
   }
+
+  // ── Silence on active neutral tab: resume background music ────────────────
+  if (changeInfo.audible === false) {
+    (async () => {
+      try {
+        const state = await getState();
+        if (state.userManuallyStopped || !state.musicTabId || tabId === state.musicTabId) return;
+
+        let [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+        if (!activeTab || activeTab.id !== tabId) return; // only care if the ACTIVE tab went silent
+
+        const role = classifyTabForSwitch(tabId, activeTab.url, state);
+        if (role !== 'neutral') return; // only resume on neutral/work tabs
+
+        const shouldResume = state.settings.smartMode
+          ? state.settings.playMusicOnWorkTabs
+          : !state.settings.pauseBothWhenElsewhere;
+
+        if (shouldResume) {
+          const allTabs = await chrome.tabs.query({}).catch(() => []);
+          const anyOtherAudible = allTabs.some((t) => t.id !== state.musicTabId && isTabActuallyPlaying(t, state.extMutedTabIds));
+          if (!anyOtherAudible) {
+            await controlTab(state.musicTabId, 'play', state.settings.fadeAudio);
+            await updateBadge(tabId, await getState());
+          }
+        }
+      } catch { /* ignore */ }
+    })();
+  }
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
