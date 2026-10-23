@@ -40,18 +40,18 @@
   const CONFIRM_DELAY_FADE_MS  = 650; // fade (~500ms) + buffer
 
   // flag so media event listeners know when WE paused/played, not the user.
-  // Scoped per-element (via WeakMap) rather than one global boolean, so acting
-  // on one player can't mask a genuine user action on a different player that
-  // happens to fire its pause/play event in the same ~800ms window.
+  // Scoped per-element (via WeakMap) plus a global timestamp guard to prevent
+  // extension actions from ever being misattributed as manual user pauses.
   const _extActionTimers = new WeakMap(); // el -> timeoutId
+  let _lastExtActionTime = 0;
 
   function markExtAction(el) {
+    _lastExtActionTime = Date.now();
     if (!el) return;
     const existing = _extActionTimers.get(el);
     if (existing) clearTimeout(existing);
     el.__smtmExtAction = true;
-    // 800ms covers the button click + any site debounce
-    const timer = setTimeout(() => { el.__smtmExtAction = false; }, 800);
+    const timer = setTimeout(() => { el.__smtmExtAction = false; }, 2500);
     _extActionTimers.set(el, timer);
   }
 
@@ -62,11 +62,12 @@
     if (_watchedMedia.has(el)) return;
     _watchedMedia.add(el);
     el.addEventListener('pause', () => {
-      if (el.__smtmExtAction) return;
+      // Must be an active user gesture on the page — ignore extension actions and background pauses
+      if (el.__smtmExtAction || Date.now() - _lastExtActionTime < 2500 || !document.hasFocus()) return;
       chrome.runtime.sendMessage({ action: 'userManualPause' }).catch(() => {});
     });
     el.addEventListener('play', () => {
-      if (el.__smtmExtAction) return;
+      if (el.__smtmExtAction || Date.now() - _lastExtActionTime < 2500 || !document.hasFocus()) return;
       chrome.runtime.sendMessage({ action: 'userManualPlay' }).catch(() => {});
     });
   }
@@ -123,7 +124,10 @@
 
   function trySiteSpecificControl(action) {
     const hostname = location.hostname.replace(/^www\./, '');
-    const selector = SITE_SELECTORS[hostname];
+    let selector = SITE_SELECTORS[hostname];
+    if (!selector && (hostname === 'm.youtube.com' || hostname === 'youtu.be')) {
+      selector = SITE_SELECTORS['youtube.com'];
+    }
     if (!selector) return false;
 
     for (const sel of selector.split(',').map(s => s.trim())) {
@@ -162,14 +166,20 @@
         await fadeVolume(el, el.volume, 0);
       }
       el.pause();
-      // Restore user's actual volume setting for next play
-      if (fadeAudio) el.volume = targetVolume;
+      if (fadeAudio) {
+        setTimeout(() => {
+          if (el.paused) el.volume = targetVolume;
+        }, 300);
+      }
     } else {
       if (fadeAudio) {
         el.volume = 0;
         el.play().catch(() => {});
         await fadeVolume(el, 0, targetVolume);
       } else {
+        if (el.__smtmUserVolume !== undefined && el.volume === 0) {
+          el.volume = targetVolume;
+        }
         el.play().catch(() => {});
       }
     }
@@ -209,6 +219,10 @@
 
     (async () => {
       try {
+        _lastExtActionTime = Date.now();
+        const preEl = findMediaElement();
+        if (preEl) markExtAction(preEl);
+
         const siteHandled = trySiteSpecificControl(action);
         if (siteHandled) {
           _lastActedElement = findMediaElement();

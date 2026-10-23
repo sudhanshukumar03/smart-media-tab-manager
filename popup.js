@@ -290,6 +290,9 @@ async function render(state) {
       statusDot.classList.add('smart');
       statusText.textContent = 'Smart Mode watching\u2026';
     }
+  } else if (!isSmartMode && musicTabId && musicValid && !settings.pauseBothWhenElsewhere && !state.userManuallyStopped) {
+    statusDot.classList.add('music');
+    statusText.textContent = 'Music playing \u00b7 background';
   } else {
     statusText.textContent = 'No media tab is active';
   }
