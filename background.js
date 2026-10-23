@@ -528,9 +528,16 @@ async function pauseCategory(category, exceptTabId, fadeAudio, knownState) {
     if (isTracked || t.audible !== false) {
       await controlTab(t.id, 'pause', fadeAudio);
     }
-    if (!trackedFound) {
+    if (state.settings.smartMode && !trackedFound) {
       trackedFound = true;
-      await setState({ [tabIdField]: t.id, [urlField]: t.url });
+      const updates = { [tabIdField]: t.id, [urlField]: t.url };
+      for (const c of CATEGORIES) {
+        if (c !== category && state[CATEGORY_TAB_FIELD[c]] === t.id) {
+          updates[CATEGORY_TAB_FIELD[c]] = null;
+          updates[CATEGORY_URL_FIELD[c]] = null;
+        }
+      }
+      await setState(updates);
     }
   }
 }
@@ -610,16 +617,29 @@ async function activateCategoryTab(category, tabId, url, fadeAudio) {
     [CATEGORY_URL_FIELD[category]]: url,
     lastActiveCategory: category,
   };
+  for (const c of CATEGORIES) {
+    if (c !== category && before[CATEGORY_TAB_FIELD[c]] === tabId) {
+      updates[CATEGORY_TAB_FIELD[c]] = null;
+      updates[CATEGORY_URL_FIELD[c]] = null;
+    }
+  }
   if (category === 'music') updates.userManuallyStopped = false;
   await setState(updates);
 
   const pausedLabels = [];
   for (const c of CATEGORIES) {
     const trackedId = before[CATEGORY_TAB_FIELD[c]];
+    let trackedWasPlaying = false;
+    if (trackedId && trackedId !== tabId) {
+      try {
+        const trTab = await chrome.tabs.get(trackedId);
+        trackedWasPlaying = isTabActuallyPlaying(trTab, before.extMutedTabIds);
+      } catch { /* ignore */ }
+    }
     // pass `before` through — it's already a fresh snapshot from the top of this
     // function, so each iteration doesn't need its own chrome.storage.local.get roundtrip
     await pauseCategory(c, tabId, fadeAudio, before);
-    if (trackedId && trackedId !== tabId) {
+    if (trackedWasPlaying) {
       const label = c === category ? labelFor(hostnameOf(before[CATEGORY_URL_FIELD[c]])) : CATEGORY_LABEL[c];
       pausedLabels.push(label);
     }
@@ -643,7 +663,8 @@ async function activateCategoryTab(category, tabId, url, fadeAudio) {
     const suffix = uniquePaused.length ? ` — Paused ${uniquePaused.join(', ')}` : '';
     sendNotification(`${CATEGORY_EMOJI[category]} ${CATEGORY_LABEL[category]}: Playing ${site}${suffix}`);
   }
-  await updateBadge(tabId, fresh);
+  const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+  await updateBadge(activeTab ? activeTab.id : tabId, fresh);
 }
 
 // Called whenever a tab classified as music/lecture/movie becomes active. Detects
@@ -787,6 +808,12 @@ async function settleConflict(entry, choice) {
       [CATEGORY_TAB_FIELD[category]]: existing.tabId,
       [CATEGORY_URL_FIELD[category]]: existing.url,
     };
+    for (const c of CATEGORIES) {
+      if (c !== category && state[CATEGORY_TAB_FIELD[c]] === existing.tabId) {
+        updates[CATEGORY_TAB_FIELD[c]] = null;
+        updates[CATEGORY_URL_FIELD[c]] = null;
+      }
+    }
     if (category === 'music') updates.userManuallyStopped = false;
     await setState(updates);
     let existingTab;
@@ -898,6 +925,12 @@ async function handleManualSwitch(activeTabId, activeWindowId, state) {
       if (activePlaying) {
         if (musicTabId) await controlTab(musicTabId, 'pause', settings.fadeAudio);
       } else if (musicTabId && !state.userManuallyStopped) {
+        const allTabs = await chrome.tabs.query({}).catch(() => []);
+        for (const t of allTabs) {
+          if (t.id !== activeTabId && t.id !== musicTabId && isTabActuallyPlaying(t, state.extMutedTabIds)) {
+            await controlTab(t.id, 'pause', settings.fadeAudio);
+          }
+        }
         await controlTab(musicTabId, 'play', settings.fadeAudio);
       }
     }
@@ -1470,7 +1503,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             _lastHandledSwitch = { tabId: null, time: 0 };
             await handleTabSwitch(message.tabId, activeTabM.windowId);
           } else {
-            await updateBadge(message.tabId, await getState());
+            await updateBadge(activeTabM ? activeTabM.id : message.tabId, await getState());
           }
           sendResponse({ success: true });
           break;
@@ -1495,7 +1528,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             _lastHandledSwitch = { tabId: null, time: 0 };
             await handleTabSwitch(message.tabId, activeTabL.windowId);
           } else {
-            await updateBadge(message.tabId, await getState());
+            await updateBadge(activeTabL ? activeTabL.id : message.tabId, await getState());
           }
           sendResponse({ success: true });
           break;
@@ -1520,7 +1553,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             _lastHandledSwitch = { tabId: null, time: 0 };
             await handleTabSwitch(message.tabId, activeTabV.windowId);
           } else {
-            await updateBadge(message.tabId, await getState());
+            await updateBadge(activeTabV ? activeTabV.id : message.tabId, await getState());
           }
           sendResponse({ success: true });
           break;
@@ -1634,6 +1667,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           }
           await setState(patch);
           const updated = await getState();
+          try {
+            const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+            if (activeTab) await updateBadge(activeTab.id, updated);
+          } catch { /* ignore */ }
           sendResponse({
             success: true,
             state: {

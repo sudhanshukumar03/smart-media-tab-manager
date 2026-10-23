@@ -284,7 +284,7 @@ async function render(state) {
     statusText.textContent = 'Movie/TV is active';
     movieRow.classList.add('active-row');
   } else if (isSmartMode && (musicTabId || lectureTabId || movieTabId)) {
-    if (activeTabRole === 'neutral' && settings && settings.playMusicOnWorkTabs && musicTabId && !state.userManuallyStopped) {
+    if (activeTabRole === 'neutral' && settings && settings.playMusicOnWorkTabs && musicTabId && musicValid && !state.userManuallyStopped) {
       statusDot.classList.add('music');
       statusText.textContent = 'Music playing \u00b7 work tab';
     } else {
@@ -396,6 +396,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 });
 
 chrome.tabs.onActivated.addListener(() => {
+  loadAndRender();
+});
+
+chrome.tabs.onRemoved.addListener(() => {
   loadAndRender();
 });
 
