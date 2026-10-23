@@ -625,6 +625,15 @@ async function activateCategoryTab(category, tabId, url, fadeAudio) {
     }
   }
 
+  // Universal Audio Arbitration: Pause ANY OTHER tab in the browser that is currently producing audio
+  let allTabs;
+  try { allTabs = await chrome.tabs.query({}); } catch { allTabs = []; }
+  for (const t of allTabs) {
+    if (t.id !== tabId && isTabActuallyPlaying(t, before.extMutedTabIds)) {
+      await controlTab(t.id, 'pause', fadeAudio);
+    }
+  }
+
   await controlTab(tabId, 'play', fadeAudio);
 
   const fresh = await getState();
@@ -772,12 +781,14 @@ async function settleConflict(entry, choice) {
     await activateCategoryTab(category, candidate.tabId, candidate.url, fadeAudio);
   } else {
     categoryPreference[category] = existing.hostname;
-    await setState({
+    const updates = {
       pendingConflicts,
       settings: { ...state.settings, categoryPreference },
       [CATEGORY_TAB_FIELD[category]]: existing.tabId,
       [CATEGORY_URL_FIELD[category]]: existing.url,
-    });
+    };
+    if (category === 'music') updates.userManuallyStopped = false;
+    await setState(updates);
     let existingTab;
     try { existingTab = await chrome.tabs.get(existing.tabId); } catch { existingTab = null; }
     if (existingTab) await controlTab(existing.tabId, 'play', fadeAudio);
@@ -835,19 +846,38 @@ async function handleManualSwitch(activeTabId, activeWindowId, state) {
   if (isMusic) {
     // switching to music = user wants to listen, clear the manual-stop flag
     await setState({ userManuallyStopped: false });
+    // Pause any other audible background tab
+    const allTabs = await chrome.tabs.query({}).catch(() => []);
+    for (const t of allTabs) {
+      if (t.id !== activeTabId && isTabActuallyPlaying(t, state.extMutedTabIds)) {
+        await controlTab(t.id, 'pause', settings.fadeAudio);
+      }
+    }
     await controlTab(musicTabId,   'play',  settings.fadeAudio);
-    if (lectureTabId) await controlTab(lectureTabId, 'pause', settings.fadeAudio);
-    if (movieTabId)   await controlTab(movieTabId,   'pause', settings.fadeAudio);
+    if (lectureTabId && lectureTabId !== musicTabId) await controlTab(lectureTabId, 'pause', settings.fadeAudio);
+    if (movieTabId && movieTabId !== musicTabId)     await controlTab(movieTabId,   'pause', settings.fadeAudio);
     if (settings.notifyOnSwitch) sendNotification('🎵 Music resumed, others paused.');
   } else if (isLecture) {
+    const allTabs = await chrome.tabs.query({}).catch(() => []);
+    for (const t of allTabs) {
+      if (t.id !== activeTabId && isTabActuallyPlaying(t, state.extMutedTabIds)) {
+        await controlTab(t.id, 'pause', settings.fadeAudio);
+      }
+    }
     await controlTab(lectureTabId, 'play',  settings.fadeAudio);
-    if (musicTabId) await controlTab(musicTabId, 'pause', settings.fadeAudio);
-    if (movieTabId) await controlTab(movieTabId, 'pause', settings.fadeAudio);
+    if (musicTabId && musicTabId !== lectureTabId) await controlTab(musicTabId, 'pause', settings.fadeAudio);
+    if (movieTabId && movieTabId !== lectureTabId) await controlTab(movieTabId, 'pause', settings.fadeAudio);
     if (settings.notifyOnSwitch) sendNotification('🎓 Lecture resumed, others paused.');
   } else if (isMovie) {
+    const allTabs = await chrome.tabs.query({}).catch(() => []);
+    for (const t of allTabs) {
+      if (t.id !== activeTabId && isTabActuallyPlaying(t, state.extMutedTabIds)) {
+        await controlTab(t.id, 'pause', settings.fadeAudio);
+      }
+    }
     await controlTab(movieTabId,   'play',  settings.fadeAudio);
-    if (musicTabId)   await controlTab(musicTabId,   'pause', settings.fadeAudio);
-    if (lectureTabId) await controlTab(lectureTabId, 'pause', settings.fadeAudio);
+    if (musicTabId && musicTabId !== movieTabId)     await controlTab(musicTabId,   'pause', settings.fadeAudio);
+    if (lectureTabId && lectureTabId !== movieTabId) await controlTab(lectureTabId, 'pause', settings.fadeAudio);
     if (settings.notifyOnSwitch) sendNotification('🎬 Movie/TV resumed, others paused.');
   } else {
     // Switched to a neutral/work tab or another window:
@@ -862,7 +892,12 @@ async function handleManualSwitch(activeTabId, activeWindowId, state) {
         if (settings.notifyOnSwitch) sendNotification('All media paused.');
       }
     } else {
-      if (musicTabId && !state.userManuallyStopped) {
+      let activeTabObj = null;
+      try { activeTabObj = await chrome.tabs.get(activeTabId); } catch { /* ignore */ }
+      const activePlaying = activeTabObj && isTabActuallyPlaying(activeTabObj, state.extMutedTabIds);
+      if (activePlaying) {
+        if (musicTabId) await controlTab(musicTabId, 'pause', settings.fadeAudio);
+      } else if (musicTabId && !state.userManuallyStopped) {
         await controlTab(musicTabId, 'play', settings.fadeAudio);
       }
     }
@@ -909,7 +944,11 @@ async function handleSmartSwitch(activeTabId, activeWindowId, state) {
       }
     }
 
-    if (settings.playMusicOnWorkTabs && musicTabId && !state.userManuallyStopped) {
+    // If active tab itself is producing audio, pause background music so they don't play together
+    const activeIsPlaying = isTabActuallyPlaying(tab, state.extMutedTabIds);
+    if (activeIsPlaying) {
+      if (musicTabId) await controlTab(musicTabId, 'pause', settings.fadeAudio);
+    } else if (settings.playMusicOnWorkTabs && musicTabId && !state.userManuallyStopped) {
       await controlTab(musicTabId, 'play', settings.fadeAudio);
     } else if (!settings.playMusicOnWorkTabs) {
       if (musicTabId) {
@@ -1201,7 +1240,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const state   = await getState();
   const updates = {};
-  if (tabId === state.musicTabId)   { updates.musicTabId = null;   updates.musicUrl = null;   }
+  if (tabId === state.musicTabId)   { updates.musicTabId = null;   updates.musicUrl = null; updates.userManuallyStopped = false; }
   if (tabId === state.lectureTabId) { updates.lectureTabId = null; updates.lectureUrl = null; }
   if (tabId === state.movieTabId)   { updates.movieTabId = null;   updates.movieUrl = null;   }
   if ((state.extMutedTabIds || []).includes(tabId)) {
@@ -1286,8 +1325,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const s = await getState();
           const host = extractHostname(message.url);
           const updates = { musicTabId: message.tabId, musicUrl: message.url, userManuallyStopped: false };
-          if (host && (host.includes('.') || host === 'localhost') && !s.musicHostnames.includes(host)) {
-            updates.musicHostnames = [...s.musicHostnames, host];
+          if (s.lectureTabId === message.tabId) { updates.lectureTabId = null; updates.lectureUrl = null; }
+          if (s.movieTabId === message.tabId)   { updates.movieTabId = null;   updates.movieUrl = null;   }
+          if (host && (host.includes('.') || host === 'localhost')) {
+            const isYt = host === 'youtube.com' || host === 'm.youtube.com' || host === 'youtu.be';
+            if (!isYt) {
+              if (!s.musicHostnames.includes(host)) updates.musicHostnames = [...s.musicHostnames, host];
+              if (s.lectureHostnames.includes(host)) updates.lectureHostnames = s.lectureHostnames.filter((h) => h !== host);
+              if (s.movieHostnames.includes(host)) updates.movieHostnames = s.movieHostnames.filter((h) => h !== host);
+            }
           }
           await setState(updates);
           sendResponse({ success: true });
@@ -1297,8 +1343,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const s = await getState();
           const host = extractHostname(message.url);
           const updates = { lectureTabId: message.tabId, lectureUrl: message.url };
-          if (host && (host.includes('.') || host === 'localhost') && !s.lectureHostnames.includes(host)) {
-            updates.lectureHostnames = [...s.lectureHostnames, host];
+          if (s.musicTabId === message.tabId) { updates.musicTabId = null; updates.musicUrl = null; }
+          if (s.movieTabId === message.tabId) { updates.movieTabId = null; updates.movieUrl = null; }
+          if (host && (host.includes('.') || host === 'localhost')) {
+            const isYt = host === 'youtube.com' || host === 'm.youtube.com' || host === 'youtu.be';
+            if (!isYt) {
+              if (!s.lectureHostnames.includes(host)) updates.lectureHostnames = [...s.lectureHostnames, host];
+              if (s.musicHostnames.includes(host)) updates.musicHostnames = s.musicHostnames.filter((h) => h !== host);
+              if (s.movieHostnames.includes(host)) updates.movieHostnames = s.movieHostnames.filter((h) => h !== host);
+            }
           }
           await setState(updates);
           sendResponse({ success: true });
@@ -1308,8 +1361,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const s = await getState();
           const host = extractHostname(message.url);
           const updates = { movieTabId: message.tabId, movieUrl: message.url };
-          if (host && (host.includes('.') || host === 'localhost') && !s.movieHostnames.includes(host)) {
-            updates.movieHostnames = [...s.movieHostnames, host];
+          if (s.musicTabId === message.tabId)   { updates.musicTabId = null;   updates.musicUrl = null;   }
+          if (s.lectureTabId === message.tabId) { updates.lectureTabId = null; updates.lectureUrl = null; }
+          if (host && (host.includes('.') || host === 'localhost')) {
+            const isYt = host === 'youtube.com' || host === 'm.youtube.com' || host === 'youtu.be';
+            if (!isYt) {
+              if (!s.movieHostnames.includes(host)) updates.movieHostnames = [...s.movieHostnames, host];
+              if (s.musicHostnames.includes(host)) updates.musicHostnames = s.musicHostnames.filter((h) => h !== host);
+              if (s.lectureHostnames.includes(host)) updates.lectureHostnames = s.lectureHostnames.filter((h) => h !== host);
+            }
           }
           await setState(updates);
           sendResponse({ success: true });
@@ -1324,6 +1384,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             musicTabId: null, lectureTabId: null, movieTabId: null,
             musicUrl: null,   lectureUrl: null,   movieUrl: null,
             extMutedTabIds: [],
+            userManuallyStopped: false,
           });
           try { chrome.action.setBadgeText({ text: '' }); } catch { /* ignore */ }
           sendResponse({ success: true });
@@ -1345,7 +1406,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
         case 'classifyUrl': {
           const s = await getState();
-          sendResponse({ success: true, role: classifyUrl(message.url, classifyConfig(s)) });
+          const role = message.tabId
+            ? classifyTabForSwitch(message.tabId, message.url, s)
+            : classifyUrl(message.url, classifyConfig(s));
+          sendResponse({ success: true, role });
           break;
         }
         case 'resolveYoutubeAmbiguity': {
@@ -1358,9 +1422,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const updates = {
             [CATEGORY_TAB_FIELD[role]]: message.tabId,
             [CATEGORY_URL_FIELD[role]]: message.url,
+            settings: { ...sYt.settings, youtubeLastChoice: role },
           };
-          if (sYt.settings.youtubeMode === 'ask') {
-            updates.settings = { ...sYt.settings, youtubeLastChoice: role };
+          if (role === 'music') {
+            updates.userManuallyStopped = false;
+            if (sYt.lectureTabId === message.tabId) { updates.lectureTabId = null; updates.lectureUrl = null; }
+            if (sYt.movieTabId === message.tabId)   { updates.movieTabId = null;   updates.movieUrl = null;   }
+          } else if (role === 'lecture') {
+            if (sYt.musicTabId === message.tabId) { updates.musicTabId = null; updates.musicUrl = null; }
+            if (sYt.movieTabId === message.tabId) { updates.movieTabId = null; updates.movieUrl = null; }
+          } else if (role === 'movie') {
+            if (sYt.musicTabId === message.tabId)   { updates.musicTabId = null;   updates.musicUrl = null;   }
+            if (sYt.lectureTabId === message.tabId) { updates.lectureTabId = null; updates.lectureUrl = null; }
           }
           await setState(updates);
           const hostname = hostnameOf(message.url) || 'youtube.com';

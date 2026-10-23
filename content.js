@@ -111,8 +111,10 @@
       const delta = (to - from) / steps;
       let step = 0;
       el.__fadeInterval = setInterval(() => {
-        step++;
-        el.volume = Math.max(0, Math.min(1, from + delta * step));
+        try {
+          step++;
+          el.volume = Math.max(0, Math.min(1, from + delta * step));
+        } catch { /* ignore */ }
         if (step >= steps) {
           clearInterval(el.__fadeInterval);
           el.__fadeInterval = null;
@@ -151,6 +153,26 @@
     return false;
   }
 
+  async function handleSiteSpecificAction(action, fadeAudio) {
+    const el = findMediaElement();
+    if (el) markExtAction(el);
+
+    if (action === 'pause' && fadeAudio && el && el.volume > 0) {
+      el.__smtmUserVolume = el.volume;
+      await fadeVolume(el, el.volume, 0);
+    }
+
+    const clicked = trySiteSpecificControl(action);
+    if (clicked && action === 'pause' && fadeAudio && el) {
+      setTimeout(() => {
+        if (el.paused && el.__smtmUserVolume !== undefined) {
+          try { el.volume = el.__smtmUserVolume; } catch { /* ignore */ }
+        }
+      }, 300);
+    }
+    return clicked;
+  }
+
   async function actOnMediaElement(el, action, fadeAudio) {
     markExtAction(el);
     _lastActedElement = el;
@@ -165,20 +187,22 @@
       if (fadeAudio && el.volume > 0) {
         await fadeVolume(el, el.volume, 0);
       }
-      el.pause();
+      try { el.pause(); } catch { /* ignore */ }
       if (fadeAudio) {
         setTimeout(() => {
-          if (el.paused) el.volume = targetVolume;
+          if (el.paused) {
+            try { el.volume = targetVolume; } catch { /* ignore */ }
+          }
         }, 300);
       }
     } else {
       if (fadeAudio) {
-        el.volume = 0;
+        try { el.volume = 0; } catch { /* ignore */ }
         el.play().catch(() => {});
         await fadeVolume(el, 0, targetVolume);
       } else {
         if (el.__smtmUserVolume !== undefined && el.volume === 0) {
-          el.volume = targetVolume;
+          try { el.volume = targetVolume; } catch { /* ignore */ }
         }
         el.play().catch(() => {});
       }
@@ -223,7 +247,7 @@
         const preEl = findMediaElement();
         if (preEl) markExtAction(preEl);
 
-        const siteHandled = trySiteSpecificControl(action);
+        const siteHandled = await handleSiteSpecificAction(action, !!fadeAudio);
         if (siteHandled) {
           _lastActedElement = findMediaElement();
           const confirmDelay = (action === 'pause' && fadeAudio) ? CONFIRM_DELAY_FADE_MS : CONFIRM_DELAY_MS;

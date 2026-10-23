@@ -210,7 +210,7 @@ async function render(state) {
   let activeTabRole = null;
   if (isSmartMode && activeTab) {
     try {
-      const res = await chrome.runtime.sendMessage({ action: 'classifyUrl', url: activeTab.url });
+      const res = await chrome.runtime.sendMessage({ action: 'classifyUrl', tabId: activeTab.id, url: activeTab.url });
       if (res && res.success) {
         activeTabRole = res.role;
         setCurrentTabRoleUI(res.role, settings);
@@ -290,6 +290,9 @@ async function render(state) {
       statusDot.classList.add('smart');
       statusText.textContent = 'Smart Mode watching\u2026';
     }
+  } else if (isSmartMode) {
+    statusDot.classList.add('smart');
+    statusText.textContent = 'Smart Mode watching\u2026';
   } else if (!isSmartMode && musicTabId && musicValid && !settings.pauseBothWhenElsewhere && !state.userManuallyStopped) {
     statusDot.classList.add('music');
     statusText.textContent = 'Music playing \u00b7 background';
