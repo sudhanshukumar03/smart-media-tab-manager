@@ -51,7 +51,7 @@ function syncSmartSubSettings(on, extraRows = []) {
 
 function getYoutubeModeValue() {
   const checked = document.querySelector('input[name="youtubeMode"]:checked');
-  return checked ? checked.value : 'ask';
+  return checked ? checked.value : 'lecture';
 }
 
 function setYoutubeModeValue(mode) {
@@ -77,7 +77,7 @@ async function init() {
     if (el) el.checked = !!settings[id];
   });
 
-  setYoutubeModeValue(settings.youtubeMode || 'ask');
+  setYoutubeModeValue(settings.youtubeMode || 'lecture');
   const lastChoiceNote = document.getElementById('youtube-last-choice-note');
   if (lastChoiceNote) {
     const CHOICE_LABEL = { music: 'Music 🎵', lecture: 'Lecture 📚', movie: 'Movie/TV 🎬' };

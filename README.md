@@ -61,8 +61,8 @@ Never have music, a lecture, and a movie all fighting for your speakers at once.
 
 | Mode | How to enable | How playback is decided |
 |---|---|---|
-| **Manual** (default) | Open the popup → click "Set current" on your music tab, then your lecture tab | Purely by tab ID — URLs are ignored entirely |
-| **Smart** | Options page → enable Smart Mode | Classifies every tab by URL against editable hostname lists |
+| **Smart** (default) | Default out-of-the-box · configurable in Options | Classifies every tab by URL against editable hostname lists |
+| **Manual** | Options page or popup "Set current" | Purely by tab ID — URLs are ignored entirely |
 
 ### Two-layer pause/play
 
@@ -88,10 +88,10 @@ Three things can trigger a playback change: tab switches (automatic), the popup,
 
 | Setting | Behavior |
 |---|---|
-| **Ask me** (default) | The popup shows a Music / Lecture / Movie picker when you land on an unresolved watch page. Your choice is remembered for future tabs in the same session. |
+| **Always Lecture** (default) | Every `youtube.com/watch` tab is automatically classified as video/lecture — pauses when switching to music or work tabs, never clashes. |
 | **Always Music** | Every `youtube.com/watch` tab is automatically classified as Music. |
-| **Always Lecture** | Every `youtube.com/watch` tab is automatically classified as a Lecture. |
 | **Always Movie/TV** | Every `youtube.com/watch` tab is automatically classified as a Movie/Show. |
+| **Ask me** | The popup shows a Music / Lecture / Movie picker when you land on an unresolved watch page. Your choice is remembered for future tabs. |
 
 The popup picker is always available as a **per-tab override** regardless of your global setting — useful when your default is "Always Music" but a specific tab is a lecture.
 
