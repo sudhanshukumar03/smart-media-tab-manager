@@ -1445,6 +1445,38 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   }
 });
 
+// ── Lifecycle: Installation, updates, and browser startup ──────────────────
+chrome.runtime.onInstalled.addListener(async () => {
+  const state = await getState();
+  // Ensure default state is initialized in storage without overwriting existing settings
+  await setState({});
+  try {
+    const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    await updateBadge(activeTab ? activeTab.id : null, state);
+  } catch { /* ignore */ }
+});
+
+chrome.runtime.onStartup.addListener(async () => {
+  // Browser was restarted: validate stored tab IDs against tabs open in this session
+  const state = await getState();
+  const allTabs = await chrome.tabs.query({}).catch(() => []);
+  const openIds = new Set(allTabs.map((t) => t.id));
+  const updates = {};
+  if (state.musicTabId && !openIds.has(state.musicTabId))     { updates.musicTabId = null; updates.musicUrl = null; }
+  if (state.lectureTabId && !openIds.has(state.lectureTabId)) { updates.lectureTabId = null; updates.lectureUrl = null; }
+  if (state.movieTabId && !openIds.has(state.movieTabId))     { updates.movieTabId = null; updates.movieUrl = null; }
+  if (state.extMutedTabIds && state.extMutedTabIds.length > 0) {
+    updates.extMutedTabIds = state.extMutedTabIds.filter((id) => openIds.has(id));
+  }
+  if (Object.keys(updates).length > 0) {
+    await setState(updates);
+  }
+  try {
+    const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    await updateBadge(activeTab ? activeTab.id : null, await getState());
+  } catch { /* ignore */ }
+});
+
 chrome.commands.onCommand.addListener(async (command) => {
   if (command !== 'toggle-mode') return;
   const state = await getState();
@@ -1480,10 +1512,18 @@ function sanitizeHostnameList(list) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (!message || typeof message !== 'object' || typeof message.action !== 'string') {
+    sendResponse({ success: false, error: 'Invalid message structure' });
+    return false;
+  }
   (async () => {
     try {
       switch (message.action) {
         case 'setMusicTab': {
+          if (!message.tabId || typeof message.tabId !== 'number') {
+            sendResponse({ success: false, error: 'Missing or invalid tabId' });
+            break;
+          }
           const s = await getState();
           const host = extractHostname(message.url);
           const updates = { musicTabId: message.tabId, musicUrl: message.url, userManuallyStopped: false };
@@ -1509,6 +1549,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           break;
         }
         case 'setLectureTab': {
+          if (!message.tabId || typeof message.tabId !== 'number') {
+            sendResponse({ success: false, error: 'Missing or invalid tabId' });
+            break;
+          }
           const s = await getState();
           const host = extractHostname(message.url);
           const updates = { lectureTabId: message.tabId, lectureUrl: message.url };
@@ -1534,6 +1578,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           break;
         }
         case 'setMovieTab': {
+          if (!message.tabId || typeof message.tabId !== 'number') {
+            sendResponse({ success: false, error: 'Missing or invalid tabId' });
+            break;
+          }
           const s = await getState();
           const host = extractHostname(message.url);
           const updates = { movieTabId: message.tabId, movieUrl: message.url };
@@ -1588,6 +1636,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           break;
         }
         case 'classifyUrl': {
+          if (!message.url || typeof message.url !== 'string') {
+            sendResponse({ success: false, error: 'Missing or invalid url' });
+            break;
+          }
           const s = await getState();
           const role = message.tabId
             ? classifyTabForSwitch(message.tabId, message.url, s)
@@ -1597,8 +1649,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
         case 'resolveYoutubeAmbiguity': {
           const role = message.role; // 'music' | 'lecture' | 'movie'
-          if (!CATEGORIES.includes(role)) {
-            sendResponse({ success: false, error: 'Invalid role' });
+          if (!CATEGORIES.includes(role) || !message.tabId || typeof message.tabId !== 'number') {
+            sendResponse({ success: false, error: 'Invalid role or tabId' });
             break;
           }
           const sYt = await getState();

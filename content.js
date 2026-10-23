@@ -73,12 +73,14 @@
   }
 
   function getAllMediaElements(root = document) {
+    if (!root || typeof root.querySelectorAll !== 'function') return [];
     const list = Array.from(root.querySelectorAll('video, audio'));
     try {
       const allNodes = root.querySelectorAll('*');
       for (let i = 0; i < allNodes.length; i++) {
-        if (allNodes[i].shadowRoot) {
-          list.push(...getAllMediaElements(allNodes[i].shadowRoot));
+        const node = allNodes[i];
+        if (node && node.shadowRoot) {
+          list.push(...getAllMediaElements(node.shadowRoot));
         }
       }
     } catch { /* ignore */ }
